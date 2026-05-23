@@ -127,36 +127,63 @@ async fn fetch_and_accept_handoff(
 }
 
 fn render_handoff_markdown(h: &Handoff) -> String {
+    // Layout goal: TUI-renderable + agent-friendly. The previous
+    // shape put a paragraph-long `## Summary` first, which made the
+    // hook output look like a wall of text in Codex's "completed"
+    // block AND let the agent miss that this *is* the answer to
+    // "where did we leave off" questions. The new layout leads
+    // with the actionable bullets (open questions, next steps) and
+    // pushes the prose summary to the bottom; the agent-facing
+    // footer explicitly tells the model how to interpret a follow-up
+    // memory_handoff_accept = null.
     let mut buf = String::with_capacity(512);
-    buf.push_str("> ai-memory — pending handoff from previous session\n");
+    buf.push_str("> 📥 **ai-memory: pending handoff from previous session**\n");
     buf.push_str(&format!(
-        "> from: {from} | created: {ts}\n",
+        "> from `{from}` · created {ts}\n",
         from = h.from_agent.as_str(),
         ts = h.created_at,
     ));
-    buf.push_str("\n## Summary\n");
-    buf.push_str(&h.summary);
+
     if !h.open_questions.is_empty() {
-        buf.push_str("\n\n## Open questions\n");
+        buf.push_str("\n**Open questions**\n");
         for q in &h.open_questions {
             buf.push_str(&format!("- {q}\n"));
         }
     }
     if !h.next_steps.is_empty() {
-        buf.push_str("\n## Next steps\n");
+        buf.push_str("\n**Next steps**\n");
         for s in &h.next_steps {
             buf.push_str(&format!("- {s}\n"));
         }
     }
     if !h.files_touched.is_empty() {
-        buf.push_str("\n## Files touched recently\n");
+        buf.push_str("\n**Files touched**\n");
         for f in &h.files_touched {
             buf.push_str(&format!("- `{f}`\n"));
         }
     }
+
+    // Summary last, as reference prose. Models reading top-down
+    // see the action items first; the summary is detail.
+    buf.push_str("\n**Summary**\n");
+    buf.push_str(h.summary.trim());
+    buf.push('\n');
+
+    // Agent-facing reading instructions. This block is the
+    // load-bearing UX fix — without it, agents call
+    // memory_handoff_accept again, get `null` (single-use
+    // already consumed by this hook), and conclude "no handoff"
+    // *despite this content being right in their context*.
     buf.push_str(
-        "\n_Tip: call `memory_query` or `memory_recent` to recover \
-         more detail from prior sessions._\n",
+        "\n---\n\
+         _**To the receiving agent:** this content IS the pending \
+         handoff — already consumed by the SessionStart hook. A \
+         subsequent `memory_handoff_accept` call will return \
+         `{ \"handoff\": null }` (single-use). When the user asks \
+         \"where did we leave off?\" or \"any pending handoff?\", \
+         answer from THIS content; do NOT re-call the tool. Call \
+         `memory_query` / `memory_recent` only for additional \
+         context beyond what's listed here._\n",
     );
     buf
 }

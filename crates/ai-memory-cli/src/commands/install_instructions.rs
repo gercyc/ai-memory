@@ -49,8 +49,9 @@ match the intent to the tool. They do not need to name the tool.
 | "is ai-memory healthy?" / "how big is the wiki?" | `memory_status` |
 | "give me the stats" / structured snapshot for the agent to consume | `memory_briefing` |
 | "catch me up" / "I've been away" / "what's important right now?" / open-ended exploration | `memory_explore` |
-| "where did we leave off?" / first turn of a new session | `memory_handoff_accept` |
-| "save context for the next session" / wrapping up | `memory_handoff_begin` |
+| "where did we leave off?" — and you see a `📥 ai-memory: pending handoff` block in your context | already done — answer from that block; do NOT re-call `memory_handoff_accept` |
+| "where did we leave off?" — and no such block is visible | `memory_handoff_accept` (rare; the SessionStart hook usually got there first) |
+| "save context for the next session" / wrapping up | `memory_handoff_begin` (terse summary; put detail in `open_questions` + `next_steps` bullets) |
 | "consolidate this session" / "compile what we learned" (usually automatic) | `memory_consolidate` |
 | "audit the wiki" / "find contradictions" / "what rules should we add?" | `memory_lint` |
 | "prune old pages" / "memory cleanup" | `memory_forget_sweep` |

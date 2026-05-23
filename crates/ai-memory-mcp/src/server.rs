@@ -43,10 +43,15 @@ for them:\n\
   arg. Use over memory_briefing when the user asks open-ended \
   questions like 'catch me up' or 'what's important right now'.\n\
 - `memory_handoff_accept` — when the user asks 'where did we leave \
-  off'. The SessionStart hook also auto-fetches this.\n\
+  off'. The SessionStart hook auto-fetches + consumes the handoff \
+  before you see your first prompt; if a block starting with \
+  '📥 ai-memory: pending handoff' is anywhere in your context, \
+  THAT is the handoff — answer from it directly, don't re-call \
+  this tool (it'll return null because handoffs are single-use).\n\
 - `memory_handoff_begin` — when the user is wrapping up and you \
   want to ensure the next agent has context (the SessionEnd hook \
-  also auto-captures this).\n\
+  also auto-captures this). Keep the summary terse (2-3 sentences); \
+  put detail in open_questions + next_steps bullets.\n\
 - `memory_consolidate` — when the user asks to compile session \
   observations into wiki pages (usually automatic at session end).\n\
 - `memory_lint` — when the user asks to audit the wiki for stale \
@@ -453,10 +458,19 @@ impl AiMemoryServer {
     }
 
     /// Create a handoff snapshot for the next agent CLI.
-    #[tool(description = "Record a cross-agent handoff snapshot. Call this \
-        before quitting one CLI so the next one (e.g. Codex picking up \
-        after Claude Code) can fetch context via memory_handoff_accept. \
-        Use cwd to scope the handoff to a specific working directory.")]
+    #[tool(description = "Record a cross-agent handoff snapshot for the \
+        NEXT agent that opens this project (e.g. Codex picking up after \
+        Claude Code). The next session's SessionStart hook automatically \
+        consumes the handoff and prepends its content to the agent's \
+        context — no manual fetch needed. \
+        \
+        Write style: keep `summary` to 2-3 SHORT sentences (what just \
+        happened + what state the project's in). Put actionable detail \
+        in `open_questions` and `next_steps` as bullet-sized strings — \
+        the next agent reads those first; long prose summaries make the \
+        TUI rendering ugly. `files_touched` is a hint, not exhaustive. \
+        \
+        Use `cwd` to scope the handoff to a specific working directory.")]
     async fn memory_handoff_begin(
         &self,
         Parameters(args): Parameters<HandoffBeginArgs>,
@@ -489,12 +503,23 @@ impl AiMemoryServer {
 
     /// Fetch the latest open handoff for this project (optionally filtered
     /// by cwd) and mark it accepted.
-    #[tool(description = "Fetch the latest open handoff for this project \
-        and mark it accepted. The SessionStart hook already calls this \
-        for you and prepends the result, so most sessions never need to \
-        invoke it directly. Call it manually only when the user asks \
-        'where did we leave off?' or when you suspect a handoff was \
-        missed. Returns summary + open questions + next steps.")]
+    #[tool(description = "Fetch the latest OPEN cross-agent handoff and \
+        mark it accepted. \
+        \
+        IMPORTANT: handoffs are SINGLE-USE. The SessionStart hook \
+        automatically consumes the handoff at session-start and prepends \
+        the content to your context — when you see a block starting with \
+        '📥 ai-memory: pending handoff from previous session' anywhere \
+        in your context, that IS the handoff. \
+        \
+        A subsequent call to this tool will return `{ \"handoff\": null }` \
+        because the hook already consumed it. Do NOT interpret null as \
+        'no handoff exists' — check your context for the prepended block \
+        first, and answer the user from there. Call this tool only when \
+        you BOTH don't see a prepended block AND the user explicitly asks \
+        for a handoff (e.g. a hook script ran with no stdout capture). \
+        \
+        Returns the same JSON shape memory_handoff_begin accepted.")]
     async fn memory_handoff_accept(
         &self,
         Parameters(args): Parameters<HandoffAcceptArgs>,
