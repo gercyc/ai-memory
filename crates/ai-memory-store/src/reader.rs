@@ -1995,6 +1995,10 @@ fn parse_agent(s: &str) -> AgentKind {
         "claude-code" => AgentKind::ClaudeCode,
         "codex" => AgentKind::Codex,
         "open-code" => AgentKind::OpenCode,
+        "cursor" => AgentKind::Cursor,
+        "gemini-cli" => AgentKind::GeminiCli,
+        "claude-desktop" => AgentKind::ClaudeDesktop,
+        "openclaw" => AgentKind::OpenClaw,
         "omp" => AgentKind::Omp,
         _ => AgentKind::Other,
     }

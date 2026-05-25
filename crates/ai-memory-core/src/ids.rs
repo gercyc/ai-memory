@@ -169,6 +169,15 @@ pub enum AgentKind {
     Codex,
     /// OpenCode (open-source coding agent).
     OpenCode,
+    /// Cursor IDE agent.
+    Cursor,
+    /// Google Gemini CLI.
+    GeminiCli,
+    /// Anthropic Claude Desktop.
+    ClaudeDesktop,
+    /// OpenClaw personal AI gateway.
+    #[serde(rename = "openclaw", alias = "open-claw")]
+    OpenClaw,
     /// Oh My Pi (`omp`) / Pi-compatible coding agent.
     Omp,
     /// Anything else (manual capture, future agents).
@@ -183,6 +192,10 @@ impl AgentKind {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
             Self::OpenCode => "open-code",
+            Self::Cursor => "cursor",
+            Self::GeminiCli => "gemini-cli",
+            Self::ClaudeDesktop => "claude-desktop",
+            Self::OpenClaw => "openclaw",
             Self::Omp => "omp",
             Self::Other => "other",
         }
@@ -257,5 +270,12 @@ mod tests {
 
         let omp = serde_json::to_string(&AgentKind::Omp).unwrap();
         assert_eq!(omp, "\"omp\"");
+
+        let openclaw = serde_json::to_string(&AgentKind::OpenClaw).unwrap();
+        assert_eq!(openclaw, "\"openclaw\"");
+        assert_eq!(
+            serde_json::from_str::<AgentKind>("\"open-claw\"").unwrap(),
+            AgentKind::OpenClaw
+        );
     }
 }

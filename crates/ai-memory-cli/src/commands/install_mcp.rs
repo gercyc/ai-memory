@@ -189,7 +189,8 @@ fn build_mcp_entry(args: &InstallMcpArgs) -> Result<serde_json::Value> {
             let mut cmd_args = vec![json!("-y"), json!("mcp-remote"), json!(args.server_url)];
             if let Some(b) = &bearer {
                 cmd_args.push(json!("--header"));
-                cmd_args.push(json!(format!("Authorization: {b}")));
+                cmd_args.push(json!("Authorization:${AI_MEMORY_AUTH_HEADER}"));
+                entry.insert("env".into(), json!({"AI_MEMORY_AUTH_HEADER": b}));
             }
             entry.insert("command".into(), json!("npx"));
             entry.insert("args".into(), serde_json::Value::Array(cmd_args));
@@ -453,12 +454,19 @@ fn render_cursor(args: &InstallMcpArgs) -> Result<String> {
 
 fn render_claude_desktop(args: &InstallMcpArgs) -> Result<String> {
     // mcp-remote's --header flag is how we plumb the Authorization
-    // through Claude Desktop's stdio-only config.
+    // through Claude Desktop's stdio-only config. Put the Bearer value
+    // in env so Windows subprocess parsing never has to split a value
+    // containing a space.
+    let bearer = bearer_header_value(args.auth_token.as_deref());
     let mut cmd_args = vec![json!("-y"), json!("mcp-remote"), json!(args.server_url)];
-    if let Some(b) = bearer_header_value(args.auth_token.as_deref()) {
+    let mut server = serde_json::Map::new();
+    if let Some(b) = &bearer {
         cmd_args.push(json!("--header"));
-        cmd_args.push(json!(format!("Authorization: {b}")));
+        cmd_args.push(json!("Authorization:${AI_MEMORY_AUTH_HEADER}"));
+        server.insert("env".into(), json!({"AI_MEMORY_AUTH_HEADER": b}));
     }
+    server.insert("command".into(), json!("npx"));
+    server.insert("args".into(), serde_json::Value::Array(cmd_args));
     Ok(format!(
         "# Claude Desktop — write to claude_desktop_config.json:\n\
          #   - macOS:    ~/Library/Application Support/Claude/claude_desktop_config.json\n\
@@ -473,12 +481,7 @@ fn render_claude_desktop(args: &InstallMcpArgs) -> Result<String> {
          # Updates\" is not enough.\n\
          {snippet}\n",
         snippet = serde_json::to_string_pretty(&json!({
-            "mcpServers": {
-                args.name.as_str(): {
-                    "command": "npx",
-                    "args": cmd_args,
-                }
-            }
+            "mcpServers": { args.name.as_str(): server }
         }))?,
     ))
 }

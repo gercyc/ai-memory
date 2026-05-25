@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clarified Gemini CLI support docs: MCP registration, lifecycle hooks,
   SessionStart handoff injection, and SessionEnd capture are now called out
   consistently across README and install guides.
+- Added OpenClaw lifecycle support via a generated native plugin package and
+  updated Cursor / Claude Desktop / OpenClaw support docs against current
+  upstream MCP and hook documentation.
 - Docker images now bundle both POSIX and PowerShell hook scripts.
 
 ### Fixed

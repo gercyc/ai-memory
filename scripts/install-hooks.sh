@@ -10,8 +10,9 @@
 #       | bash -s -- --agent claude-code
 #
 # Options:
-#   --agent <claude-code|codex|opencode|omp|pi> which agent (default: claude-code;
-#                                                opencode/omp/pi print extension hints)
+#   --agent <claude-code|codex|cursor|gemini-cli|opencode|openclaw|omp|pi>
+#                                                which agent (default: claude-code;
+#                                                generated-plugin agents print hints)
 #   --to <dir>                               install root (default: $HOME/.ai-memory/hooks)
 #   --ref <git-ref>                          repo ref to pull from (default: main)
 #
@@ -45,9 +46,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$AGENT" in
-    claude-code|codex|opencode|omp|pi|oh-my-pi) ;;
+    claude-code|codex|cursor|gemini-cli|opencode|openclaw|omp|pi|oh-my-pi) ;;
     *)
-        echo "unsupported agent: $AGENT (expected claude-code | codex | opencode | omp | pi | oh-my-pi)" >&2
+        echo "unsupported agent: $AGENT (expected claude-code | codex | cursor | gemini-cli | opencode | openclaw | omp | pi | oh-my-pi)" >&2
         exit 64 ;;
 esac
 
@@ -55,6 +56,13 @@ if [[ "$AGENT" == "opencode" ]]; then
     echo "OpenCode uses a generated TypeScript plugin, not shell hook scripts."
     echo "Run: ai-memory install-hooks --agent opencode --apply"
     echo "Then restart OpenCode so it loads ~/.config/opencode/plugins/ai-memory.ts."
+    exit 0
+fi
+
+if [[ "$AGENT" == "openclaw" ]]; then
+    echo "OpenClaw uses a generated native TypeScript plugin, not shell hook scripts."
+    echo "Run: ai-memory install-hooks --agent openclaw --apply"
+    echo "Then restart the OpenClaw gateway if it does not auto-restart after plugin install."
     exit 0
 fi
 

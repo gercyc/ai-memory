@@ -135,12 +135,13 @@ pub(crate) const CODEX_EVENTS: [(&str, &str); 6] = [
 /// and a FLAT JSON shape (no inner `hooks: [...]` wrapper).
 /// `beforeSubmitPrompt` maps to ai-memory's `user-prompt-submit`
 /// concept. Cursor has no `userPromptSubmit` event.
-pub(crate) const CURSOR_EVENTS: [(&str, &str); 7] = [
+pub(crate) const CURSOR_EVENTS: [(&str, &str); 8] = [
     ("sessionStart", "session-start.sh"),
     ("sessionEnd", "session-end.sh"),
     ("beforeSubmitPrompt", "user-prompt-submit.sh"),
     ("preToolUse", "pre-tool-use.sh"),
     ("postToolUse", "post-tool-use.sh"),
+    ("postToolUseFailure", "post-tool-use.sh"),
     ("preCompact", "pre-compact.sh"),
     ("stop", "stop.sh"),
 ];
@@ -460,6 +461,7 @@ mod tests {
             .unwrap_or_default();
         assert!(events.contains(&"sessionStart"));
         assert!(events.contains(&"preToolUse"));
+        assert!(events.contains(&"postToolUseFailure"));
         assert!(
             !events.contains(&"SessionStart"),
             "Cursor uses camelCase, not PascalCase"

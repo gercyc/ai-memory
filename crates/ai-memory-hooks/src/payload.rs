@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct HookQuery {
     /// Lifecycle event identifier (kebab-case or snake_case).
     pub event: String,
-    /// Agent CLI identifier (`claude-code`, `codex`, `open-code`, `omp`).
+    /// Agent CLI identifier (`claude-code`, `codex`, `cursor`, etc.).
     pub agent: Option<String>,
 }
 
@@ -63,14 +63,23 @@ impl HookEvent {
     #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
-            "session-start" | "session_start" | "SessionStart" => Self::SessionStart,
-            "user-prompt" | "user_prompt" | "UserPromptSubmit" => Self::UserPrompt,
-            "pre-tool-use" | "pre_tool_use" | "PreToolUse" => Self::PreToolUse,
-            "post-tool-use" | "post_tool_use" | "PostToolUse" => Self::PostToolUse,
-            "pre-compact" | "pre_compact" | "PreCompact" => Self::PreCompact,
+            "session-start" | "session_start" | "SessionStart" | "sessionStart" => {
+                Self::SessionStart
+            }
+            "user-prompt" | "user_prompt" | "UserPromptSubmit" | "beforeSubmitPrompt" => {
+                Self::UserPrompt
+            }
+            "pre-tool-use" | "pre_tool_use" | "PreToolUse" | "preToolUse" | "BeforeTool" => {
+                Self::PreToolUse
+            }
+            "post-tool-use" | "post_tool_use" | "PostToolUse" | "postToolUse"
+            | "postToolUseFailure" | "PostToolUseFailure" | "AfterTool" => Self::PostToolUse,
+            "pre-compact" | "pre_compact" | "PreCompact" | "preCompact" | "PreCompress" => {
+                Self::PreCompact
+            }
             "notification" | "Notification" => Self::Notification,
             "stop" | "Stop" => Self::Stop,
-            "session-end" | "session_end" | "SessionEnd" => Self::SessionEnd,
+            "session-end" | "session_end" | "SessionEnd" | "sessionEnd" => Self::SessionEnd,
             _ => Self::Other,
         }
     }
@@ -100,6 +109,10 @@ pub fn parse_agent(s: &str) -> AgentKind {
         "claude-code" | "claude_code" | "claude" => AgentKind::ClaudeCode,
         "codex" => AgentKind::Codex,
         "open-code" | "opencode" => AgentKind::OpenCode,
+        "cursor" => AgentKind::Cursor,
+        "gemini-cli" | "gemini" => AgentKind::GeminiCli,
+        "claude-desktop" | "claude_desktop" => AgentKind::ClaudeDesktop,
+        "openclaw" | "open-claw" => AgentKind::OpenClaw,
         "omp" | "pi" | "oh-my-pi" => AgentKind::Omp,
         _ => AgentKind::Other,
     }
@@ -416,6 +429,11 @@ mod tests {
         assert_eq!(parse_agent("codex"), AgentKind::Codex);
         assert_eq!(parse_agent("opencode"), AgentKind::OpenCode);
         assert_eq!(parse_agent("open-code"), AgentKind::OpenCode);
+        assert_eq!(parse_agent("cursor"), AgentKind::Cursor);
+        assert_eq!(parse_agent("gemini-cli"), AgentKind::GeminiCli);
+        assert_eq!(parse_agent("gemini"), AgentKind::GeminiCli);
+        assert_eq!(parse_agent("claude-desktop"), AgentKind::ClaudeDesktop);
+        assert_eq!(parse_agent("openclaw"), AgentKind::OpenClaw);
         assert_eq!(parse_agent("omp"), AgentKind::Omp);
         assert_eq!(parse_agent("pi"), AgentKind::Omp);
         assert_eq!(parse_agent("oh-my-pi"), AgentKind::Omp);
@@ -424,7 +442,6 @@ mod tests {
         // attributed to the catch-all bucket.
         assert_eq!(parse_agent(""), AgentKind::Other);
         assert_eq!(parse_agent("CLAUDE-CODE"), AgentKind::Other); // case-sensitive on purpose
-        assert_eq!(parse_agent("gemini-cli"), AgentKind::Other);
         assert_eq!(parse_agent("../../etc/passwd"), AgentKind::Other);
     }
 

@@ -51,7 +51,10 @@ pub fn run(config: &Config, args: SetupAgentArgs) -> Result<()> {
         auth_token: args.auth_token.or_else(|| config.auth.bearer_token.clone()),
         ..args
     };
-    if matches!(args.agent, AgentChoice::OpenCode | AgentChoice::Omp) {
+    if matches!(
+        args.agent,
+        AgentChoice::OpenCode | AgentChoice::Omp | AgentChoice::Openclaw
+    ) {
         emit_extension_setup_hint(&args);
         return Ok(());
     }
@@ -62,14 +65,7 @@ pub fn run(config: &Config, args: SetupAgentArgs) -> Result<()> {
         AgentChoice::GeminiCli => "gemini-cli",
         AgentChoice::OpenCode => unreachable!("opencode handled above"),
         AgentChoice::Omp => unreachable!("omp handled above"),
-        AgentChoice::Openclaw => {
-            anyhow::bail!(
-                "OpenClaw has no lifecycle hooks (only HTTP webhooks); \
-                 `setup-agent --agent openclaw` is not applicable. Use \
-                 `install-mcp --client openclaw --apply` for the MCP config \
-                 only."
-            );
-        }
+        AgentChoice::Openclaw => unreachable!("openclaw handled above"),
     };
 
     let source = resolve_source(args.source.as_deref(), agent_sub)?;
@@ -130,11 +126,7 @@ pub fn run(config: &Config, args: SetupAgentArgs) -> Result<()> {
         AgentChoice::OpenCode => unreachable!("opencode handled above"),
         AgentChoice::Omp => unreachable!("omp handled above"),
         AgentChoice::Openclaw => {
-            // Unreachable — the early bail at the top of run()
-            // catches openclaw before we get here. Defensive
-            // arm so the match stays exhaustive if the bail is
-            // ever removed.
-            unreachable!("openclaw handled by the early bail above");
+            unreachable!("openclaw handled by the generated-integration hint above");
         }
     }
     Ok(())
@@ -154,7 +146,13 @@ fn emit_extension_setup_hint(args: &SetupAgentArgs) {
             "Then restart OMP so it loads ~/.omp/agent/extensions/ai-memory.ts.",
             "pi",
         ),
-        _ => unreachable!("only extension-based agents reach this hint"),
+        AgentChoice::Openclaw => (
+            "OpenClaw",
+            "openclaw",
+            "Then restart the OpenClaw gateway if it does not auto-restart after plugin install.",
+            "openclaw",
+        ),
+        _ => unreachable!("only generated-integration agents reach this hint"),
     };
     println!("# {label} uses a TypeScript extension/plugin, not extracted shell scripts.");
     println!("# Install it directly instead:");

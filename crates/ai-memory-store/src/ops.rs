@@ -555,6 +555,10 @@ fn agent_kind_as_str(kind: AgentKind) -> &'static str {
         AgentKind::ClaudeCode => "claude-code",
         AgentKind::Codex => "codex",
         AgentKind::OpenCode => "open-code",
+        AgentKind::Cursor => "cursor",
+        AgentKind::GeminiCli => "gemini-cli",
+        AgentKind::ClaudeDesktop => "claude-desktop",
+        AgentKind::OpenClaw => "openclaw",
         AgentKind::Omp => "omp",
         AgentKind::Other => "other",
     }

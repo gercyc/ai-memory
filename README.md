@@ -29,7 +29,7 @@
 | Gemini CLI | Supported | MCP config + lifecycle hooks. |
 | Oh My Pi / OMP | Supported | `pi` / `omp` aliases for MCP config + TypeScript extension. |
 | Claude Desktop | MCP-only | Uses `mcp-remote`; no lifecycle hooks. |
-| OpenClaw | MCP-only | OpenClaw has MCP/webhook ingress but no lifecycle hook surface. |
+| OpenClaw | Supported | MCP config + native plugin lifecycle hooks. |
 | LLM providers | Supported | Anthropic, OpenAI, Gemini, and OpenAI-compatible endpoints. |
 | Embedding providers | Supported | OpenAI and Voyage. |
 
@@ -750,7 +750,7 @@ data-flow diagram + crate breakdown + cross-cutting invariants.
 |---|---|
 | [`docs/install.md`](docs/install.md) | **Installation cookbook.** Every agent CLI, every alternative (curl, source build, no-docker, no-auth), and the server-on-a-different-machine (homelab/LAN) walkthrough. Read after the Quick start if your setup doesn't match the happy path. |
 | [`docs/windows.md`](docs/windows.md) | Windows install modes: full WSL2, native Windows with Docker Desktop, native source builds, and current hook/MCP harness caveats. |
-| [`docs/mcp-install.md`](docs/mcp-install.md) | Per-client MCP config snippets (Cursor, Claude Desktop, Gemini CLI, OpenClaw, OMP). |
+| [`docs/mcp-install.md`](docs/mcp-install.md) | Per-client MCP and lifecycle notes (Cursor, Claude Desktop, Gemini CLI, OpenClaw, OMP). |
 | [`docs/deploy.md`](docs/deploy.md) | Homelab deploy: bin/deploy, bearer-token auth, TLS via cloudflared. |
 | [`docs/lifecycle-ops.md`](docs/lifecycle-ops.md) | **Read before running purge / rename / backup / restore / reset.** Safety matrix for the state-touching commands, per-project disk layout (how isolation actually works), and operator workflows for "fresh start", "snapshot before risky op", "drop one project". |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Operational summary: data flow, crate layout, cross-cutting invariants, schema. |

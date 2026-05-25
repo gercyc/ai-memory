@@ -141,16 +141,16 @@ Windows agent builds.
 
 - Claude Code may be used natively on Windows or from inside WSL2. Test
   which process launches the hooks before assuming path format.
-- Codex, OpenCode, Cursor, and Gemini CLI may each choose different
+- Codex, OpenCode, Cursor, Gemini CLI, and OpenClaw may each choose different
   Windows config locations or shell execution behavior. ai-memory uses
   the current best-known defaults, but they need validation on real
   installations.
 - MCP over HTTP should be less path-sensitive than hooks, but
   `install-mcp --apply` still writes to a client-specific config file;
   confirm the agent actually loads it.
-- OpenCode and OMP/Pi use generated TypeScript integrations rather than
-  the shell hook bundle, so their Windows behavior depends on the host
-  runtime loading those files correctly.
+- OpenClaw, OpenCode, and OMP/Pi use generated TypeScript integrations
+  rather than the shell hook bundle, so their Windows behavior depends
+  on the host runtime loading those files correctly.
 
 ## Suggested Test Checklist
 

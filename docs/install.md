@@ -81,17 +81,17 @@ Each agent CLI needs two things:
    Without this, the agent can still query memory but capture
    becomes manual.
 
-Claude Desktop and OpenClaw are MCP-only today. Claude Code, Codex,
-OpenCode, OMP, Cursor, and Gemini CLI have lifecycle capture paths
-through `install-hooks`.
+Claude Desktop is MCP-only today. Claude Code, Codex, OpenCode, OMP,
+Cursor, Gemini CLI, and OpenClaw have lifecycle capture paths through
+`install-hooks`.
 
 > **Two-step hook install pattern.** Claude Code, Codex, Cursor, and
 > Gemini CLI use shell/PowerShell hook scripts: (1) `docker cp` the
 > bundled scripts to your home dir, (2) `docker run --rm install-hooks`
 > to render the config snippet.
-> OpenCode and OMP are different: they use generated TypeScript
-> plugin/extension files, so no shell-script extraction is needed for
-> those clients.
+> OpenClaw, OpenCode, and OMP are different: they use generated
+> TypeScript plugin/extension files, so no shell-script extraction is
+> needed for those clients.
 
 ### OpenAI Codex
 
@@ -191,6 +191,10 @@ docker run --rm akitaonrails/ai-memory:latest \
     --server-url "http://homelab:49374/mcp"
 
 docker run --rm akitaonrails/ai-memory:latest \
+    install-hooks --agent cursor         --auth-token "$TOKEN" \
+    --server-url "http://homelab:49374"
+
+docker run --rm akitaonrails/ai-memory:latest \
     install-mcp --client claude-desktop  --auth-token "$TOKEN" \
     --server-url "http://homelab:49374/mcp"
 
@@ -205,21 +209,25 @@ docker run --rm akitaonrails/ai-memory:latest \
 docker run --rm akitaonrails/ai-memory:latest \
     install-mcp --client openclaw        --auth-token "$TOKEN" \
     --server-url "http://homelab:49374/mcp"
+
+docker run --rm akitaonrails/ai-memory:latest \
+    install-hooks --agent openclaw       --auth-token "$TOKEN" \
+    --server-url "http://homelab:49374"
 ```
 
-Cursor and Gemini CLI support both `install-mcp` and `install-hooks`.
-Claude Desktop and OpenClaw are MCP-only here, so you'll need to nudge
-the model to call `memory_query` / `memory_handoff_accept` itself. For
-clients with `install-hooks` support, the capture path handles handoff
-injection at session start.
+Cursor, Gemini CLI, and OpenClaw support both `install-mcp` and
+`install-hooks`. Claude Desktop is MCP-only here, so you'll need to
+nudge the model to call `memory_query` / `memory_handoff_accept` itself.
+For clients with `install-hooks` support, the capture path handles
+handoff injection at session start.
 
 ---
 
 ## Installing hooks without docker
 
 If you only need to use ai-memory *from* a machine (i.e. that
-machine doesn't run the server), the curl installer pulls the seven
-hook scripts straight from GitHub:
+machine doesn't run the server), the curl installer pulls shell hook
+scripts straight from GitHub for shell-hook agents:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/akitaonrails/ai-memory/main/scripts/install-hooks.sh \
@@ -234,10 +242,11 @@ docker run --rm akitaonrails/ai-memory:latest \
         --auth-token "$TOKEN"
 ```
 
-The curl script installer supports `--agent claude-code|codex|opencode|omp|pi`
-and `--to <dir>`; `--help` prints the full flag list. OpenCode and OMP do
-not need this script installer because `install-hooks --agent opencode`
-and `install-hooks --agent omp` / `--agent pi` generate TypeScript files instead.
+The curl script installer supports
+`--agent claude-code|codex|cursor|gemini-cli|opencode|openclaw|omp|pi`
+and `--to <dir>`; `--help` prints the full flag list. OpenCode,
+OpenClaw, and OMP do not need script extraction because `install-hooks`
+generates TypeScript plugin/extension files for them instead.
 
 This path is friction-free when:
 - You have curl + bash but not docker

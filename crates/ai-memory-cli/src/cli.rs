@@ -329,7 +329,7 @@ pub struct RestoreArgs {
 }
 
 /// Agent CLI to install hooks/extensions for. For MCP-only clients
-/// (Claude Desktop, OpenClaw), use `install-mcp --client <name>` instead.
+/// (Claude Desktop), use `install-mcp --client <name>` instead.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum AgentChoice {
     /// Anthropic Claude Code.
@@ -356,9 +356,8 @@ pub enum AgentChoice {
     /// file directly; restart `omp` for it to load.
     #[value(alias = "pi", alias = "oh-my-pi")]
     Omp,
-    /// OpenClaw personal AI gateway — **no lifecycle hooks**;
-    /// `install-hooks --apply --agent openclaw` prints an
-    /// explanation and exits without mutating anything.
+    /// OpenClaw personal AI gateway — native plugin package with
+    /// session/tool/compaction hooks.
     Openclaw,
 }
 
@@ -497,7 +496,7 @@ pub struct InstallHooksArgs {
     pub agent: AgentChoice,
     /// Filesystem root that contains the vendored hook scripts (defaults
     /// to the repo's `hooks/` if known, else `/usr/local/share/ai-memory/hooks`).
-    /// Ignored for OpenCode, whose integration is a generated TypeScript plugin.
+    /// Ignored for generated TypeScript integrations (OpenCode, OMP, OpenClaw).
     #[arg(long)]
     pub hooks_dir: Option<PathBuf>,
     /// Server URL the hooks will POST to.
@@ -517,6 +516,7 @@ pub struct InstallHooksArgs {
     #[arg(long)]
     pub apply: bool,
     /// Override the settings/plugin/extension file path for the selected agent.
+    /// For OpenClaw, this is the generated plugin package directory.
     #[arg(long)]
     pub config_file: Option<PathBuf>,
 }
