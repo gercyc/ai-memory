@@ -10,6 +10,9 @@
 //! `AI_MEMORY_AUTH_TOKEN` exactly once; this module only consumes the
 //! resolved values.
 
+use std::io::{BufWriter, Write as _};
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -186,20 +189,20 @@ fn augment_connect_error(
     }
 }
 
-/// POST an empty body to `<endpoint>{path}`, return the raw response bytes.
+/// POST an empty body to `<endpoint>{path}`, streaming the response to `dest`.
 ///
 /// Intended for routes whose response is binary (e.g. `POST /admin/backup`
 /// returns an `application/gzip` tarball). On non-2xx the response body is
-/// consumed and returned as an error string.
+/// consumed and returned as an error string. Returns bytes written.
 ///
 /// # Errors
 /// Returns an error when the connection fails, the response is non-2xx,
-/// or the body cannot be read.
-pub async fn post_bytes(endpoint: &ServerEndpoint, path: &str) -> Result<Vec<u8>> {
+/// or the body cannot be read or written.
+pub async fn post_to_file(endpoint: &ServerEndpoint, path: &str, dest: &Path) -> Result<u64> {
     let client = reqwest::Client::new();
     let url = format!("{}{path}", endpoint.url);
     let req = endpoint.authenticate(client.post(&url));
-    let resp = req
+    let mut resp = req
         .send()
         .await
         .map_err(|e| augment_connect_error(e, endpoint, &url))?;
@@ -208,10 +211,24 @@ pub async fn post_bytes(endpoint: &ServerEndpoint, path: &str) -> Result<Vec<u8>
         let body = resp.text().await.unwrap_or_default();
         bail!("server returned {status}: {body}");
     }
-    resp.bytes()
+    let file = std::fs::File::create(dest)
+        .with_context(|| format!("creating output file {}", dest.display()))?;
+    let mut writer = BufWriter::new(file);
+    let mut written = 0_u64;
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map(|b| b.to_vec())
-        .with_context(|| format!("reading response bytes from POST {url}"))
+        .with_context(|| format!("reading response chunk from POST {url}"))?
+    {
+        writer
+            .write_all(&chunk)
+            .with_context(|| format!("writing response chunk to {}", dest.display()))?;
+        written += chunk.len() as u64;
+    }
+    writer
+        .flush()
+        .with_context(|| format!("flushing {}", dest.display()))?;
+    Ok(written)
 }
 
 #[cfg(test)]

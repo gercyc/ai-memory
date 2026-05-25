@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   providers, and embedding providers.
 
 ### Changed
+- Same-body page upserts are now true no-ops, avoiding periodic watcher
+  reconcile writes, FTS churn, and misleading recent-page timestamps.
 - Documented the vector backend policy and the measured criteria required
   before adding `sqlite-vec`.
 - Clarified Gemini CLI support docs: MCP registration, lifecycle hooks,
@@ -40,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker images now bundle both POSIX and PowerShell hook scripts.
 
 ### Fixed
+- `backup --to` now streams the tarball to disk instead of buffering the full
+  archive in CLI memory.
 - Hyphenated FTS5 queries such as `ai-memory` are normalized safely instead of
   being parsed as column operators.
 - Gemini 2.5 Flash requests disable default dynamic thinking so hidden thought

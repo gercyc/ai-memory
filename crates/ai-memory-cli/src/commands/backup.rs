@@ -2,15 +2,14 @@
 //! `/admin/backup` endpoint and save the returned gzip tarball.
 //!
 //! The server uses SQLite's online backup API so the live DB is never
-//! raced. This client simply receives the bytes and writes them to
-//! the caller-supplied path.
+//! raced. This client streams the response to the caller-supplied path.
 
 use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::cli::BackupArgs;
 use crate::config::Config;
-use crate::http_client::{ServerEndpoint, post_bytes};
+use crate::http_client::{ServerEndpoint, post_to_file};
 
 /// Run the `backup` subcommand.
 ///
@@ -19,10 +18,6 @@ use crate::http_client::{ServerEndpoint, post_bytes};
 /// returns a non-2xx status, or the output file cannot be written.
 pub async fn run(config: &Config, args: BackupArgs) -> Result<()> {
     let endpoint = ServerEndpoint::from_config(config);
-    let bytes = post_bytes(&endpoint, "/admin/backup")
-        .await
-        .context("requesting backup from server")?;
-
     let dest = &args.to;
     if let Some(parent) = dest.parent()
         && !parent.as_os_str().is_empty()
@@ -30,10 +25,10 @@ pub async fn run(config: &Config, args: BackupArgs) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating parent dir for {}", dest.display()))?;
     }
-    std::fs::write(dest, &bytes)
-        .with_context(|| format!("writing backup to {}", dest.display()))?;
+    let size = post_to_file(&endpoint, "/admin/backup", dest)
+        .await
+        .context("requesting backup from server")?;
 
-    let size = bytes.len() as u64;
     info!(path = %dest.display(), bytes = size, "backup written");
     println!(
         "✓ wrote backup to {} ({})",

@@ -928,11 +928,10 @@ async fn handle_embed(
     } else {
         state
             .reader
-            .load_embeddings(ws, proj, provider.clone(), model.clone(), dim)
+            .embedded_page_ids(ws, proj, provider.clone(), model.clone(), dim)
             .await
             .map_err(|e| internal_err(e.to_string()))?
             .into_iter()
-            .map(|s| s.id)
             .collect()
     };
 

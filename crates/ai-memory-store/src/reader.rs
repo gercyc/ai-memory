@@ -37,6 +37,24 @@ pub struct PageHit {
     pub rank: f64,
 }
 
+/// Search hit with workspace/project names, used by the web UI to avoid
+/// per-hit metadata lookups after a global search.
+#[derive(Debug, Clone, Serialize)]
+pub struct PageHitWithMeta {
+    /// Name of the workspace containing the page.
+    pub workspace_name: String,
+    /// Name of the project containing the page.
+    pub project_name: String,
+    /// Relative path within the wiki tree.
+    pub path: PagePath,
+    /// Page title.
+    pub title: String,
+    /// FTS5 snippet of the body around the matched terms (HTML-marked).
+    pub snippet: String,
+    /// FTS5 rank score (lower is better — closer to query terms).
+    pub rank: f64,
+}
+
 /// One raw observation fallback hit returned when compiled wiki pages miss.
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservationHit {
@@ -290,7 +308,7 @@ impl ReaderPool {
     pub async fn search_pages(&self, query: String, limit: usize) -> StoreResult<Vec<PageHit>> {
         let query = normalize_fts_query(&query);
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT pages.id, pages.path, pages.title, \
                         snippet(pages_fts, 1, '<mark>', '</mark>', '…', 24) AS snip, \
                         pages_fts.rank \
@@ -326,6 +344,59 @@ impl ReaderPool {
         .await
     }
 
+    /// Run a global full-text search and include workspace/project names in
+    /// each row. This keeps the web search route to one SQLite query instead
+    /// of one search query plus a metadata lookup per hit.
+    ///
+    /// # Errors
+    /// Propagates any SQL or pool error.
+    pub async fn search_pages_with_meta(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> StoreResult<Vec<PageHitWithMeta>> {
+        let query = normalize_fts_query(&query);
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT workspaces.name, projects.name, pages.path, pages.title, \
+                        snippet(pages_fts, 1, '<mark>', '</mark>', '…', 24) AS snip, \
+                        pages_fts.rank \
+                 FROM pages_fts \
+                 JOIN pages ON pages.rowid = pages_fts.rowid \
+                 JOIN projects ON projects.id = pages.project_id \
+                 JOIN workspaces ON workspaces.id = pages.workspace_id \
+                 WHERE pages_fts MATCH ?1 AND pages.is_latest = 1 \
+                 ORDER BY pages_fts.rank \
+                 LIMIT ?2",
+            )?;
+            #[allow(clippy::cast_possible_wrap)]
+            let rows = stmt.query_map(params![query, limit as i64], |row| {
+                let workspace_name: String = row.get(0)?;
+                let project_name: String = row.get(1)?;
+                let path: String = row.get(2)?;
+                let title: String = row.get(3)?;
+                let snippet: String = row.get(4)?;
+                let rank: f64 = row.get(5)?;
+                Ok((workspace_name, project_name, path, title, snippet, rank))
+            })?;
+
+            let mut hits = Vec::new();
+            for row in rows {
+                let (workspace_name, project_name, path, title, snippet, rank) = row?;
+                hits.push(PageHitWithMeta {
+                    workspace_name,
+                    project_name,
+                    path: PagePath::new(path)?,
+                    title,
+                    snippet,
+                    rank,
+                });
+            }
+            Ok(hits)
+        })
+        .await
+    }
+
     /// Run a full-text search scoped to one project.
     ///
     /// # Errors
@@ -339,7 +410,7 @@ impl ReaderPool {
     ) -> StoreResult<Vec<PageHit>> {
         let query = normalize_fts_query(&query);
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT pages.id, pages.path, pages.title, \
                         snippet(pages_fts, 1, '<mark>', '</mark>', '…', 24) AS snip, \
                         pages_fts.rank \
@@ -467,7 +538,7 @@ impl ReaderPool {
     /// Propagates any SQL or pool error.
     pub async fn recent_pages(&self, limit: usize) -> StoreResult<Vec<PageHit>> {
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, path, title, \
                         substr(body, 1, 240) AS snip, \
                         CAST(updated_at AS REAL) AS rank \
@@ -512,7 +583,7 @@ impl ReaderPool {
         limit: usize,
     ) -> StoreResult<Vec<PageHit>> {
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, path, title, \
                         substr(body, 1, 240) AS snip, \
                         CAST(updated_at AS REAL) AS rank \
@@ -559,7 +630,7 @@ impl ReaderPool {
         session_id: SessionId,
     ) -> StoreResult<Vec<Observation>> {
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, session_id, workspace_id, project_id, kind, title, body, \
                         importance, created_at \
                  FROM observations \
@@ -625,7 +696,7 @@ impl ReaderPool {
         dim: u32,
     ) -> StoreResult<Vec<StoredEmbedding>> {
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT page_embeddings.page_id, page_embeddings.vector, pages.path \
                  FROM page_embeddings \
                  JOIN pages ON pages.id = page_embeddings.page_id \
@@ -659,6 +730,116 @@ impl ReaderPool {
                 let vector = bytes_to_f32_vec(&vec_bytes, dim)?;
                 out.push(StoredEmbedding { id, path, vector });
             }
+            Ok(out)
+        })
+        .await
+    }
+
+    /// Return page ids that already have a matching embedding row.
+    ///
+    /// This is cheaper than [`ReaderPool::load_embeddings`] for backfill paths
+    /// that only need to skip already-embedded pages.
+    ///
+    /// # Errors
+    /// Propagates any SQL or pool error.
+    pub async fn embedded_page_ids(
+        &self,
+        workspace_id: WorkspaceId,
+        project_id: ProjectId,
+        provider: String,
+        model: String,
+        dim: u32,
+    ) -> StoreResult<Vec<PageId>> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT page_embeddings.page_id \
+                 FROM page_embeddings \
+                 JOIN pages ON pages.id = page_embeddings.page_id \
+                 WHERE pages.workspace_id = ?1 \
+                   AND pages.project_id = ?2 \
+                   AND pages.is_latest = 1 \
+                   AND page_embeddings.provider = ?3 \
+                   AND page_embeddings.model = ?4 \
+                   AND page_embeddings.dim = ?5",
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    workspace_id.as_bytes(),
+                    project_id.as_bytes(),
+                    provider,
+                    model,
+                    dim,
+                ],
+                |row| {
+                    let id_bytes: Vec<u8> = row.get(0)?;
+                    Ok(id_bytes)
+                },
+            )?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(PageId::from_slice(&row?)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn top_embedding_hits_for_project(
+        &self,
+        workspace_id: WorkspaceId,
+        project_id: ProjectId,
+        query_vec: Vec<f32>,
+        provider: String,
+        model: String,
+        dim: u32,
+        limit: usize,
+    ) -> StoreResult<Vec<(PageId, PagePath, f32)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT page_embeddings.page_id, page_embeddings.vector, pages.path \
+                 FROM page_embeddings \
+                 JOIN pages ON pages.id = page_embeddings.page_id \
+                 WHERE pages.workspace_id = ?1 \
+                   AND pages.project_id = ?2 \
+                   AND pages.is_latest = 1 \
+                   AND page_embeddings.provider = ?3 \
+                   AND page_embeddings.model = ?4 \
+                   AND page_embeddings.dim = ?5",
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    workspace_id.as_bytes(),
+                    project_id.as_bytes(),
+                    provider,
+                    model,
+                    dim,
+                ],
+                |row| {
+                    let id_bytes: Vec<u8> = row.get(0)?;
+                    let vec_bytes: Vec<u8> = row.get(1)?;
+                    let path: String = row.get(2)?;
+                    Ok((id_bytes, vec_bytes, path))
+                },
+            )?;
+
+            let mut out = Vec::new();
+            for row in rows {
+                let (id_bytes, vec_bytes, path) = row?;
+                out.push((
+                    PageId::from_slice(&id_bytes)?,
+                    PagePath::new(path)?,
+                    dot_embedding_bytes(&query_vec, &vec_bytes, dim)?,
+                ));
+            }
+            if out.len() > limit {
+                out.select_nth_unstable_by(limit, score_desc);
+                out.truncate(limit);
+            }
+            out.sort_by(score_desc);
             Ok(out)
         })
         .await
@@ -882,19 +1063,17 @@ impl ReaderPool {
             .await?;
         let mut vec_hits: Vec<(PageId, PagePath, f32)> = Vec::new();
         if let Some(qv) = query_vec {
-            // Compute cosines against all stored embeddings.
-            let stored = self
-                .load_embeddings(workspace_id, project_id, provider, model, dim)
+            vec_hits = self
+                .top_embedding_hits_for_project(
+                    workspace_id,
+                    project_id,
+                    qv,
+                    provider,
+                    model,
+                    dim,
+                    limit * 2,
+                )
                 .await?;
-            vec_hits = stored
-                .iter()
-                .map(|s| {
-                    let score = dot(&qv, &s.vector);
-                    (s.id, s.path.clone(), score)
-                })
-                .collect();
-            vec_hits.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-            vec_hits.truncate(limit * 2);
         }
 
         let mut seed_seen = std::collections::HashSet::new();
@@ -1099,13 +1278,13 @@ impl ReaderPool {
             // Rules: any `is_latest = 1` page under `_rules/`.
             // Routed there automatically by the consolidator when
             // `kind = "rule"` — see consolidator.rs::slugify_for_rule.
-            let mut rules_stmt = conn.prepare(
+            let mut rules_stmt = conn.prepare_cached(
                 "SELECT path, title, \
                         COALESCE(json_extract(frontmatter_json, '$.kind'), 'fact') AS kind, \
                         updated_at \
                  FROM pages \
-                 WHERE is_latest = 1 AND path LIKE '_rules/%' \
-                 ORDER BY updated_at DESC",
+                  WHERE is_latest = 1 AND path GLOB '_rules/*' \
+                  ORDER BY updated_at DESC",
             )?;
             let rules: Vec<BriefingPage> = rules_stmt
                 .query_map([], briefing_page_from_row)?
@@ -1113,13 +1292,13 @@ impl ReaderPool {
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let mut slots_stmt = conn.prepare(
+            let mut slots_stmt = conn.prepare_cached(
                 "SELECT path, title, \
                         COALESCE(json_extract(frontmatter_json, '$.kind'), 'slot') AS kind, \
                         updated_at \
                  FROM pages \
-                 WHERE is_latest = 1 AND path LIKE '_slots/%' \
-                 ORDER BY path ASC",
+                  WHERE is_latest = 1 AND path GLOB '_slots/*' \
+                  ORDER BY path ASC",
             )?;
             let slots: Vec<BriefingPage> = slots_stmt
                 .query_map([], briefing_page_from_row)?
@@ -1127,7 +1306,7 @@ impl ReaderPool {
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let mut recent_stmt = conn.prepare(
+            let mut recent_stmt = conn.prepare_cached(
                 "SELECT path, title, \
                         COALESCE(json_extract(frontmatter_json, '$.kind'), 'fact') AS kind, \
                         updated_at \
@@ -1223,13 +1402,13 @@ impl ReaderPool {
                 project_id,
             )?;
 
-            let mut rules_stmt = conn.prepare(
+            let mut rules_stmt = conn.prepare_cached(
                 "SELECT path, title, \
                         COALESCE(json_extract(frontmatter_json, '$.kind'), 'fact') AS kind, \
                         updated_at \
                  FROM pages \
-                 WHERE workspace_id = ?1 AND project_id = ?2 AND is_latest = 1 AND path LIKE '_rules/%' \
-                 ORDER BY updated_at DESC",
+                  WHERE workspace_id = ?1 AND project_id = ?2 AND is_latest = 1 AND path GLOB '_rules/*' \
+                  ORDER BY updated_at DESC",
             )?;
             let rules: Vec<BriefingPage> = rules_stmt
                 .query_map(params![workspace_id.as_bytes(), project_id.as_bytes()], briefing_page_from_row)?
@@ -1237,13 +1416,13 @@ impl ReaderPool {
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let mut slots_stmt = conn.prepare(
+            let mut slots_stmt = conn.prepare_cached(
                 "SELECT path, title, \
                         COALESCE(json_extract(frontmatter_json, '$.kind'), 'slot') AS kind, \
                         updated_at \
                  FROM pages \
-                 WHERE workspace_id = ?1 AND project_id = ?2 AND is_latest = 1 AND path LIKE '_slots/%' \
-                 ORDER BY path ASC",
+                  WHERE workspace_id = ?1 AND project_id = ?2 AND is_latest = 1 AND path GLOB '_slots/*' \
+                  ORDER BY path ASC",
             )?;
             let slots: Vec<BriefingPage> = slots_stmt
                 .query_map(params![workspace_id.as_bytes(), project_id.as_bytes()], briefing_page_from_row)?
@@ -1251,7 +1430,7 @@ impl ReaderPool {
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let mut recent_stmt = conn.prepare(
+            let mut recent_stmt = conn.prepare_cached(
                 "SELECT path, title, \
                         COALESCE(json_extract(frontmatter_json, '$.kind'), 'fact') AS kind, \
                         updated_at \
@@ -1789,8 +1968,36 @@ pub struct StoredEmbedding {
     pub vector: Vec<f32>,
 }
 
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+fn score_desc(a: &(PageId, PagePath, f32), b: &(PageId, PagePath, f32)) -> std::cmp::Ordering {
+    b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+fn dot_embedding_bytes(query: &[f32], bytes: &[u8], dim: u32) -> StoreResult<f32> {
+    let dim = dim as usize;
+    if query.len() != dim {
+        return Err(StoreError::Memory(
+            ai_memory_core::MemoryError::MalformedRecord(format!(
+                "query vector dim {} != expected {}",
+                query.len(),
+                dim
+            )),
+        ));
+    }
+    let expected = dim * 4;
+    if bytes.len() != expected {
+        return Err(StoreError::Memory(
+            ai_memory_core::MemoryError::MalformedRecord(format!(
+                "embedding bytes {} != expected {}",
+                bytes.len(),
+                expected
+            )),
+        ));
+    }
+    Ok(query
+        .iter()
+        .zip(bytes.chunks_exact(4))
+        .map(|(q, chunk)| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * q)
+        .sum())
 }
 
 fn bytes_to_f32_vec(bytes: &[u8], dim: u32) -> StoreResult<Vec<f32>> {

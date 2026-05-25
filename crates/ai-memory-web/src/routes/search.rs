@@ -32,29 +32,22 @@ pub(crate) async fn handler(
     } else {
         let raw = state
             .reader
-            .search_pages(query.clone(), 50)
+            .search_pages_with_meta(query.clone(), 50)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        // Search hits carry only the page id/path/title/snippet. Resolve
-        // workspace + project by page id so duplicate paths in sibling
-        // projects still link to the right page.
         let mut results = Vec::with_capacity(raw.len());
         for h in raw {
-            if let Ok(Some(m)) = state.reader.page_meta_by_id(h.id).await {
-                let path = h.path.as_str().to_owned();
-                let href = page_href(&m.workspace_name, &m.project_name, &path);
-                results.push(SearchHit {
-                    workspace: m.workspace_name,
-                    project: m.project_name,
-                    path,
-                    href,
-                    title: h.title,
-                    snippet: markdown::escape_snippet(&h.snippet),
-                });
-            } else {
-                // Fallback: no workspace/project known; skip for now.
-            }
+            let path = h.path.as_str().to_owned();
+            let href = page_href(&h.workspace_name, &h.project_name, &path);
+            results.push(SearchHit {
+                workspace: h.workspace_name,
+                project: h.project_name,
+                path,
+                href,
+                title: h.title,
+                snippet: markdown::escape_snippet(&h.snippet),
+            });
         }
         results
     };

@@ -346,7 +346,7 @@ async fn run_embedding_backfill(
     let dim = embedder.dim();
     let candidates = reader.decay_candidates(workspace_id, project_id).await?;
     let already: std::collections::HashSet<_> = reader
-        .load_embeddings(
+        .embedded_page_ids(
             workspace_id,
             project_id,
             provider.clone(),
@@ -355,7 +355,6 @@ async fn run_embedding_backfill(
         )
         .await?
         .into_iter()
-        .map(|s| s.id)
         .collect();
 
     let mut embedded = 0usize;

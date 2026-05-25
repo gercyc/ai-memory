@@ -173,14 +173,7 @@ fn upsert_page_in_tx(
 
     if let Some((existing_id, existing_sha)) = existing {
         if existing_sha == body_sha256 {
-            tx.execute(
-                "UPDATE pages SET updated_at = ?1 WHERE id = ?2",
-                params![now, existing_id],
-            )?;
-            let existing_page_id = PageId::from_slice(&existing_id).map_err(StoreError::from)?;
-            replace_links_in_tx(tx, &existing_page_id, page)?;
-            refresh_incoming_links_for_path(tx, page, &existing_page_id)?;
-            return Ok(existing_page_id);
+            return PageId::from_slice(&existing_id).map_err(StoreError::from);
         }
         let new_id = PageId::new();
         tx.execute(
@@ -879,6 +872,24 @@ mod tests {
         let id2 = upsert_page(&mut conn, &p).unwrap();
 
         assert_eq!(id1, id2, "identical body should not supersede");
+        conn.execute(
+            "UPDATE pages SET updated_at = 123 WHERE id = ?1",
+            params![id1.as_bytes()],
+        )
+        .unwrap();
+        let id3 = upsert_page(&mut conn, &p).unwrap();
+        assert_eq!(id1, id3, "identical body should keep the same page id");
+        let updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM pages WHERE id = ?1",
+                params![id1.as_bytes()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            updated_at, 123,
+            "unchanged content should not dirty the row"
+        );
         let total: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pages WHERE path = ?1",

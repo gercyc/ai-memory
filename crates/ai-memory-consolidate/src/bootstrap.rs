@@ -730,13 +730,16 @@ pub fn prune_sources_to_budget(
     let total_count = sources.len();
     let mut total: usize = sources.iter().map(BootstrapSource::estimated_tokens).sum();
 
-    // We iterate sources in drop order and remove until we fit.
+    // We iterate sources in drop order, then drain once. Repeated
+    // `remove(0)` shifts the whole vector each time on large repos.
+    let mut drop_count = 0;
     while total > usable
-        && let Some(victim) = sources.first()
+        && let Some(victim) = sources.get(drop_count)
     {
         total = total.saturating_sub(victim.estimated_tokens());
-        sources.remove(0);
+        drop_count += 1;
     }
+    sources.drain(0..drop_count);
     let kept = sources;
     let dropped = total_count - kept.len();
     (kept, dropped, total)
