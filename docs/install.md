@@ -150,8 +150,9 @@ ai-memory install-hooks --agent omp --apply \
 ```
 
 Restart OMP after installing or changing the extension; extensions are
-loaded at startup. The `pi` MCP client name and `omp` hook agent name
-target the same current Oh My Pi integration surface.
+loaded at startup. The ai-memory CLI accepts `--client pi` /
+`--client omp` for MCP and `--agent omp` / `--agent pi` for hooks;
+all four target the same current Oh My Pi integration surface.
 
 ### Bind mounts vs docker cp
 
@@ -227,10 +228,10 @@ docker run --rm akitaonrails/ai-memory:latest \
         --auth-token "$TOKEN"
 ```
 
-The curl script installer supports `--agent claude-code|codex|opencode|omp`
+The curl script installer supports `--agent claude-code|codex|opencode|omp|pi`
 and `--to <dir>`; `--help` prints the full flag list. OpenCode and OMP do
 not need this script installer because `install-hooks --agent opencode`
-and `install-hooks --agent omp` generate TypeScript files instead.
+and `install-hooks --agent omp` / `--agent pi` generate TypeScript files instead.
 
 This path is friction-free when:
 - You have curl + bash but not docker

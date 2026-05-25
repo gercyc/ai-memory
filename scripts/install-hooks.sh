@@ -10,8 +10,8 @@
 #       | bash -s -- --agent claude-code
 #
 # Options:
-#   --agent <claude-code|codex|opencode|omp> which agent (default: claude-code;
-#                                             opencode/omp print extension hints)
+#   --agent <claude-code|codex|opencode|omp|pi> which agent (default: claude-code;
+#                                                opencode/omp/pi print extension hints)
 #   --to <dir>                               install root (default: $HOME/.ai-memory/hooks)
 #   --ref <git-ref>                          repo ref to pull from (default: main)
 #
@@ -45,9 +45,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$AGENT" in
-    claude-code|codex|opencode|omp) ;;
+    claude-code|codex|opencode|omp|pi|oh-my-pi) ;;
     *)
-        echo "unsupported agent: $AGENT (expected claude-code | codex | opencode | omp)" >&2
+        echo "unsupported agent: $AGENT (expected claude-code | codex | opencode | omp | pi | oh-my-pi)" >&2
         exit 64 ;;
 esac
 
@@ -58,7 +58,7 @@ if [[ "$AGENT" == "opencode" ]]; then
     exit 0
 fi
 
-if [[ "$AGENT" == "omp" ]]; then
+if [[ "$AGENT" == "omp" || "$AGENT" == "pi" || "$AGENT" == "oh-my-pi" ]]; then
     echo "OMP uses a generated TypeScript extension, not shell hook scripts."
     echo "Run: ai-memory install-hooks --agent omp --apply"
     echo "Then restart OMP so it loads ~/.omp/agent/extensions/ai-memory.ts."

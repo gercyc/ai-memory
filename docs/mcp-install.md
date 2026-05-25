@@ -179,16 +179,18 @@ OpenClaw distinguishes transports explicitly. Use
 
 ## Oh My Pi / OMP
 
-**Status:** ✅ MCP supported. ✅ Lifecycle capture supported via
-`ai-memory install-hooks --agent omp --apply`.
+**Status:** ✅ MCP supported via `install-mcp --client pi` or
+`--client omp`. ✅ Lifecycle capture supported via
+`ai-memory install-hooks --agent omp --apply` or `--agent pi --apply`.
 
 **Config file:**
 - User: `~/.omp/agent/mcp.json`
 - Project: `.omp/mcp.json`
 
 The current Oh My Pi package exposes the `omp` binary and native
-`.omp` config directories. The ai-memory CLI accepts `--client pi` and
-`--client omp` as aliases for this same MCP surface.
+`.omp` config directories. The ai-memory CLI accepts `--client pi` /
+`--client omp` for MCP and `--agent omp` / `--agent pi` for lifecycle
+capture; they are aliases for this same integration surface.
 
 ```json
 {
@@ -206,6 +208,8 @@ The current Oh My Pi package exposes the `omp` binary and native
 
 ```bash
 ai-memory install-hooks --agent omp --apply
+# or:
+ai-memory install-hooks --agent pi --apply
 ```
 
 This writes `~/.omp/agent/extensions/ai-memory.ts`, which OMP discovers

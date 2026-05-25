@@ -7,10 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
-- Oh My Pi / OMP is now a first-class integration: `install-mcp --client omp`
-  writes native `~/.omp/agent/mcp.json` config, and
-  `install-hooks --agent omp` writes the TypeScript extension used for
-  lifecycle capture and handoff injection.
+- Oh My Pi / OMP is now a first-class integration: `install-mcp --client pi`
+  and `--client omp` write native `~/.omp/agent/mcp.json` config, while
+  `install-hooks --agent omp` and `--agent pi` write the TypeScript extension
+  used for lifecycle capture and handoff injection.
 
 ## [0.1.3] - 2026-05-24
 
