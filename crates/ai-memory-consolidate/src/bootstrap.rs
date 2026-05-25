@@ -347,14 +347,9 @@ impl Bootstrap {
         // ---- LLM call(s) — chunked when over chunk_input_tokens ----
         let chunks = plan_bootstrap_chunks(kept, chunk_budget);
         let llm_chunks = chunks.len();
-        info!(
-            llm_chunks,
-            chunk_budget,
-            "bootstrap LLM chunk plan",
-        );
+        info!(llm_chunks, chunk_budget, "bootstrap LLM chunk plan",);
 
-        let mut pages_by_path: std::collections::HashMap<String, BootstrapPage> =
-            std::collections::HashMap::new();
+        let mut pages_by_path = std::collections::BTreeMap::new();
         let mut rationales = Vec::with_capacity(llm_chunks);
 
         for (idx, chunk) in chunks.iter().enumerate() {
@@ -366,18 +361,20 @@ impl Bootstrap {
                 chunk = idx + 1,
                 total = llm_chunks,
                 sources = chunk.len(),
-                est_tokens = chunk.iter().map(BootstrapSource::estimated_tokens).sum::<usize>(),
+                est_tokens = chunk
+                    .iter()
+                    .map(BootstrapSource::estimated_tokens)
+                    .sum::<usize>(),
                 "bootstrap LLM chunk",
             );
             let batch: BootstrapBatch = complete_structured(&*self.llm, request).await?;
             rationales.push(batch.rationale);
             for page in batch.pages {
-                pages_by_path.insert(page.path.clone(), page);
+                insert_bootstrap_page(&mut pages_by_path, page, idx + 1);
             }
         }
 
-        let mut merged_pages: Vec<BootstrapPage> = pages_by_path.into_values().collect();
-        merged_pages.sort_by(|a, b| a.path.cmp(&b.path));
+        let merged_pages: Vec<BootstrapPage> = pages_by_path.into_values().collect();
         let rationale = if rationales.len() == 1 {
             rationales.pop().unwrap_or_default()
         } else {
@@ -412,16 +409,16 @@ impl Bootstrap {
             });
         }
         // Plus the manifest itself.
-        let manifest_body = render_manifest_body(
+        let manifest_body = render_manifest_body(ManifestRender {
             now,
-            collected,
+            sources_collected: collected,
             sources_sent,
             sources_dropped,
             est_tokens,
-            &rationale,
-            &written_paths,
+            rationale: &rationale,
+            pages: &written_paths,
             llm_chunks,
-        );
+        });
         requests.push(WritePageRequest {
             workspace_id: cfg.workspace_id,
             project_id: cfg.project_id,
@@ -849,17 +846,18 @@ pub fn plan_bootstrap_chunks(
 }
 
 /// Pack sources into chunks ≤ `usable` estimated tokens (best sources first).
-fn chunk_sources_greedy(
-    sources: Vec<BootstrapSource>,
-    usable: usize,
-) -> Vec<Vec<BootstrapSource>> {
+fn chunk_sources_greedy(sources: Vec<BootstrapSource>, usable: usize) -> Vec<Vec<BootstrapSource>> {
     let mut chunks: Vec<Vec<BootstrapSource>> = Vec::new();
     let mut current: Vec<BootstrapSource> = Vec::new();
     let mut current_tokens = 0usize;
 
     // After prune, low drop_priority (README, rules) sit at the end — process
     // those first so early chunks carry the highest-signal material.
-    for src in sources.into_iter().rev() {
+    for src in sources
+        .into_iter()
+        .rev()
+        .flat_map(|src| split_oversized_source(src, usable))
+    {
         let t = src.estimated_tokens();
         if !current.is_empty() && current_tokens.saturating_add(t) > usable {
             chunks.push(current);
@@ -873,6 +871,40 @@ fn chunk_sources_greedy(
         chunks.push(current);
     }
     chunks
+}
+
+fn split_oversized_source(source: BootstrapSource, usable: usize) -> Vec<BootstrapSource> {
+    if usable == 0 || source.estimated_tokens() <= usable {
+        return vec![source];
+    }
+
+    let BootstrapSource { kind, label, text } = source;
+    let max_text_chars = usable
+        .saturating_mul(CHARS_PER_TOKEN)
+        .saturating_sub(label.len().saturating_add(64))
+        .max(CHARS_PER_TOKEN);
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    while start < text.len() {
+        let mut end = start.saturating_add(max_text_chars).min(text.len());
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            end = text[start..]
+                .char_indices()
+                .nth(1)
+                .map_or(text.len(), |(idx, _)| start + idx);
+        }
+        let part_no = parts.len() + 1;
+        parts.push(BootstrapSource {
+            kind,
+            label: format!("{label} (part {part_no})"),
+            text: text[start..end].to_string(),
+        });
+        start = end;
+    }
+    parts
 }
 
 // --------------------------------------------------------------------
@@ -956,6 +988,22 @@ fn parse_decision_serial(path: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
+fn insert_bootstrap_page(
+    pages_by_path: &mut std::collections::BTreeMap<String, BootstrapPage>,
+    page: BootstrapPage,
+    chunk_index: usize,
+) {
+    if pages_by_path.contains_key(&page.path) {
+        warn!(
+            path = %page.path,
+            chunk = chunk_index,
+            "skipping duplicate bootstrap page path from later chunk"
+        );
+        return;
+    }
+    pages_by_path.insert(page.path.clone(), page);
+}
+
 // --------------------------------------------------------------------
 // Manifest rendering
 // --------------------------------------------------------------------
@@ -969,16 +1017,28 @@ fn build_frontmatter(title: &str, tags: &[String], now: Timestamp) -> serde_json
     })
 }
 
-fn render_manifest_body(
+struct ManifestRender<'a> {
     now: Timestamp,
     sources_collected: usize,
     sources_sent: usize,
     sources_dropped: usize,
     est_tokens: usize,
-    rationale: &str,
-    pages: &[String],
+    rationale: &'a str,
+    pages: &'a [String],
     llm_chunks: usize,
-) -> String {
+}
+
+fn render_manifest_body(input: ManifestRender<'_>) -> String {
+    let ManifestRender {
+        now,
+        sources_collected,
+        sources_sent,
+        sources_dropped,
+        est_tokens,
+        rationale,
+        pages,
+        llm_chunks,
+    } = input;
     let mut buf = String::with_capacity(1024);
     buf.push_str("# Bootstrap manifest\n\n");
     buf.push_str(&format!(
@@ -1184,6 +1244,28 @@ mod tests {
     }
 
     #[test]
+    fn plan_chunks_splits_single_oversized_source() {
+        let source = BootstrapSource {
+            kind: SourceKind::DocFile,
+            label: "docs/huge.md".into(),
+            text: "x".repeat(100_000),
+        };
+        let chunks = plan_bootstrap_chunks(vec![source], 8_000);
+        assert!(chunks.len() > 1, "one large file should be split");
+        for chunk in &chunks {
+            let t: usize = chunk.iter().map(BootstrapSource::estimated_tokens).sum();
+            assert!(t <= 8_000, "chunk should respect budget; got {t}");
+        }
+        assert!(
+            chunks
+                .iter()
+                .flatten()
+                .any(|source| source.label.contains("(part 2)")),
+            "split labels should identify later parts"
+        );
+    }
+
+    #[test]
     fn plan_chunks_zero_disables() {
         let s = BootstrapSource {
             kind: SourceKind::Readme,
@@ -1208,6 +1290,34 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_page_paths_keep_first_page() {
+        let mut pages = std::collections::BTreeMap::new();
+        insert_bootstrap_page(
+            &mut pages,
+            BootstrapPage {
+                path: "concepts/runtime.md".into(),
+                title: "Runtime".into(),
+                body_markdown: "first".into(),
+                tags: vec![],
+            },
+            1,
+        );
+        insert_bootstrap_page(
+            &mut pages,
+            BootstrapPage {
+                path: "concepts/runtime.md".into(),
+                title: "Runtime duplicate".into(),
+                body_markdown: "second".into(),
+                tags: vec![],
+            },
+            2,
+        );
+
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages["concepts/runtime.md"].body_markdown, "first");
+    }
+
+    #[test]
     fn effective_chunk_budget_clamps_to_max() {
         assert_eq!(effective_chunk_budget(50_000, 24_000), 24_000);
         assert_eq!(effective_chunk_budget(0, 24_000), 0);
@@ -1215,7 +1325,11 @@ mod tests {
 
     #[test]
     fn next_decision_serial_continues_across_chunks() {
-        let paths = ["concepts/foo.md", "decisions/0003-old.md", "decisions/0001-first.md"];
+        let paths = [
+            "concepts/foo.md",
+            "decisions/0003-old.md",
+            "decisions/0001-first.md",
+        ];
         assert_eq!(next_decision_serial(&paths), 4);
         assert_eq!(next_decision_serial(&[]), 1);
     }

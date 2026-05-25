@@ -86,8 +86,7 @@ pub async fn run(config: &Config, args: BootstrapArgs) -> Result<()> {
         !args.exclude_code,
     )?;
     let collected = sources.len();
-    let (sources, dropped, est_tokens) =
-        prune_sources_to_budget(sources, args.max_input_tokens);
+    let (sources, dropped, est_tokens) = prune_sources_to_budget(sources, args.max_input_tokens);
     let chunk_budget = ai_memory_consolidate::effective_chunk_budget(
         args.chunk_input_tokens,
         args.max_input_tokens,
@@ -119,6 +118,7 @@ pub async fn run(config: &Config, args: BootstrapArgs) -> Result<()> {
         ensure_sources_for_dry_run(&sources)?;
         let outcome = local_dry_run(
             sources,
+            collected,
             args.max_input_tokens,
             args.chunk_input_tokens,
         );
@@ -171,20 +171,19 @@ fn ensure_sources_for_dry_run(sources: &[BootstrapSource]) -> Result<()> {
 /// preview of what would be sent.
 fn local_dry_run(
     sources: Vec<BootstrapSource>,
+    sources_collected: usize,
     max_input_tokens: usize,
     chunk_input_tokens: usize,
 ) -> BootstrapOutcome {
-    let collected = sources.len();
-    let (kept, dropped, est_tokens) = prune_sources_to_budget(sources, max_input_tokens);
+    let (kept, _dropped, est_tokens) = prune_sources_to_budget(sources, max_input_tokens);
     let kept_counts = SourceCounts::from_sources(&kept);
     let chunk_budget =
         ai_memory_consolidate::effective_chunk_budget(chunk_input_tokens, max_input_tokens);
-    let llm_chunks =
-        ai_memory_consolidate::plan_bootstrap_chunks(kept.clone(), chunk_budget).len();
+    let llm_chunks = ai_memory_consolidate::plan_bootstrap_chunks(kept.clone(), chunk_budget).len();
     BootstrapOutcome {
-        sources_collected: collected,
+        sources_collected,
         sources_sent: kept.len(),
-        sources_dropped: dropped,
+        sources_dropped: sources_collected.saturating_sub(kept.len()),
         sources_by_kind: kept_counts,
         estimated_input_tokens: est_tokens,
         pages_written: Vec::new(),
@@ -257,7 +256,11 @@ fn print_human_report(outcome: &BootstrapOutcome, workspace: &str, project: &str
         }
     );
     if outcome.llm_chunks > 1 {
-        println!("  -> {} sequential LLM chunk{}", outcome.llm_chunks, if outcome.llm_chunks == 1 { "" } else { "s" });
+        println!(
+            "  -> {} sequential LLM chunk{}",
+            outcome.llm_chunks,
+            if outcome.llm_chunks == 1 { "" } else { "s" }
+        );
     }
 
     if outcome.dry_run {
@@ -310,6 +313,7 @@ mod tests {
         // so the lowest input we can hand the helper is one source.
         let outcome = local_dry_run(
             vec![source(SourceKind::Readme, "README", 50)],
+            1,
             150_000,
             ai_memory_consolidate::DEFAULT_CHUNK_INPUT_TOKENS,
         );
@@ -330,6 +334,7 @@ mod tests {
         ];
         let outcome = local_dry_run(
             sources,
+            4,
             150_000,
             ai_memory_consolidate::DEFAULT_CHUNK_INPUT_TOKENS,
         );
@@ -375,6 +380,7 @@ mod tests {
             .collect();
         let outcome = local_dry_run(
             sources,
+            30,
             2_000,
             ai_memory_consolidate::DEFAULT_CHUNK_INPUT_TOKENS,
         );
@@ -387,5 +393,18 @@ mod tests {
             outcome.sources_sent + outcome.sources_dropped
         );
         assert!(outcome.dry_run);
+    }
+
+    #[test]
+    fn local_dry_run_preserves_pre_prune_collected_count() {
+        let outcome = local_dry_run(
+            vec![source(SourceKind::Readme, "README", 50)],
+            10,
+            150_000,
+            ai_memory_consolidate::DEFAULT_CHUNK_INPUT_TOKENS,
+        );
+        assert_eq!(outcome.sources_collected, 10);
+        assert_eq!(outcome.sources_sent, 1);
+        assert_eq!(outcome.sources_dropped, 9);
     }
 }

@@ -194,9 +194,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                 .nest_service("/mcp", mcp_service)
                 .merge(hooks)
                 .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-                .merge(
-                    admin.layer(DefaultBodyLimit::max(BOOTSTRAP_MAX_BODY_BYTES)),
-                );
+                .merge(admin.layer(DefaultBodyLimit::max(BOOTSTRAP_MAX_BODY_BYTES)));
             let router =
                 mount_web_router(router, args.enable_web, store.reader.clone(), wiki.clone());
             let router = apply_http_layers(router, auth_state, config.allowed_hosts.clone());

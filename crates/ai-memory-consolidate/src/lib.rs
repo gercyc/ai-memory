@@ -15,8 +15,8 @@ pub mod sweep;
 pub mod types;
 
 pub use bootstrap::{
-    Bootstrap, BootstrapConfig, BootstrapError, BootstrapOutcome, BootstrapSource, SourceCounts,
-    SourceKind, DEFAULT_CHUNK_INPUT_TOKENS, collect_sources, discover_repo_root,
+    Bootstrap, BootstrapConfig, BootstrapError, BootstrapOutcome, BootstrapSource,
+    DEFAULT_CHUNK_INPUT_TOKENS, SourceCounts, SourceKind, collect_sources, discover_repo_root,
     effective_chunk_budget, plan_bootstrap_chunks, prune_sources_to_budget,
 };
 pub use consolidator::{

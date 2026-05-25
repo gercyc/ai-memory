@@ -536,12 +536,9 @@ fn dry_run_outcome(
     let sources_sent = kept.len();
     let sources_dropped = collected.saturating_sub(sources_sent);
     let counts = SourceCounts::from_sources(&kept);
-    let chunk_budget = ai_memory_consolidate::effective_chunk_budget(
-        chunk_input_tokens,
-        max_input_tokens,
-    );
-    let llm_chunks =
-        ai_memory_consolidate::plan_bootstrap_chunks(kept.clone(), chunk_budget).len();
+    let chunk_budget =
+        ai_memory_consolidate::effective_chunk_budget(chunk_input_tokens, max_input_tokens);
+    let llm_chunks = ai_memory_consolidate::plan_bootstrap_chunks(kept.clone(), chunk_budget).len();
     let outcome = BootstrapOutcome {
         sources_collected: collected,
         sources_sent,

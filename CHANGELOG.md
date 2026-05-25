@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- `ai-memory bootstrap` now prunes collected sources before POSTing to the
+  server and supports `--chunk-input-tokens` to process large repositories via
+  sequential LLM calls instead of one oversized prompt.
 - `.ai-memory.toml` marker file lets a directory tree declare its
   `workspace` (required) and `project` (optional) without depending on
   `basename($cwd)`. Lifecycle hook scripts walk up from `cwd` to find
