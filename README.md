@@ -339,6 +339,14 @@ short-lived Copilot API token via GitHub's `/copilot_internal/v2/token`, and
 uses the Copilot Chat endpoint with `vscode-chat` integration headers. You can
 also set `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` on the server.
 
+> [!TIP]
+> **For the OAuth/subscription backends (`anthropic-oauth`, `openai-oauth`,
+> `copilot`), pick a small, fast model** via `AI_MEMORY_LLM_MODEL` — e.g.
+> `claude-haiku-4-5` or `gpt-5-mini`. ai-memory's LLM work (consolidation,
+> lint, explore) is summarisation, not hard reasoning, so a Haiku/mini-class
+> model is plenty and is much easier on subscription rate limits. Save the
+> high-effort thinking models for your coding agent.
+
 Embeddings are optional and separate from the LLM provider. Set
 `AI_MEMORY_EMBEDDING_PROVIDER=openai`, `voyage`, `google`, or `gemini` when
 you want vector reranking in addition to FTS5 + graph-neighbor retrieval.

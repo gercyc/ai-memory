@@ -699,6 +699,14 @@ docker run -d --name ai-memory \
 Both `ANTHROPIC_OAUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` are accepted;
 ai-memory checks `ANTHROPIC_OAUTH_TOKEN` first.
 
+> [!TIP]
+> **Pick a small, fast model.** ai-memory's LLM work — session
+> consolidation, lint, and explore — is summarisation/extraction, not hard
+> reasoning, so a Haiku-class model is plenty: faster, cheaper, and far easier
+> on subscription rate limits than Sonnet/Opus. Set e.g.
+> `AI_MEMORY_LLM_MODEL=claude-haiku-4-5`. Save the high-effort thinking models
+> for your actual coding agent.
+
 ### OpenAI OAuth / Codex
 
 `openai-oauth` is for ChatGPT Pro/Plus/Codex accounts. It does **not** use
@@ -726,6 +734,14 @@ docker exec -it ai-memory ai-memory auth login openai-oauth
 
 Use `ai-memory auth status` to check whether a token is present and
 `ai-memory auth logout openai-oauth` to remove it.
+
+> [!TIP]
+> **Pick a small, fast model.** Consolidation / lint / explore are
+> summarisation tasks, not hard reasoning — a mini-class model is plenty and
+> is much easier on subscription rate limits. Set e.g.
+> `AI_MEMORY_LLM_MODEL=gpt-5-mini` (the `gpt-5.5` default works but is
+> overkill for this workload). Reserve the high-effort reasoning models for
+> your coding agent.
 
 ### GitHub Copilot
 
