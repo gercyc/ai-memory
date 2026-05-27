@@ -52,7 +52,9 @@ jobs:
   # ship to Docker Hub silently.
   release-build:
     name: cargo build --release
-    runs-on: ubuntu-latest
+    # Match the release workflow so the prebuilt binary runs on Debian bookworm
+    # in the Docker runtime image.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
