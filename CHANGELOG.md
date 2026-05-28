@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and embedding provider health based on the last real provider call, without
   active probing or token spend ([#46]).
 
+### Changed
+- Agent-facing prompts (`MEMORY_INSTRUCTIONS`, the `CLAUDE.md`/`AGENTS.md`
+  routing snippet, and the per-tool `project`/`cwd` arg docstrings) now lead
+  with a clear "default to the current project — do not pass `project` or
+  `cwd` args unless the user names a *different* project" rule, plus a
+  reminder that the SessionStart auto-fetched handoff block already covers the
+  current project. Reduces cross-agent friction where a fresh agent surfaced
+  the wrong project's handoff because the LLM over-eagerly passed scoping
+  args. Doc-only, no behaviour change.
+
 ### Fixed
 - Claude Code hook installs on native Windows now render Git Bash-compatible
   `bash -c` commands that keep the POSIX `.sh` hook scripts and convert
