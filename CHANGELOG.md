@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-28
+
 ### Added
 - `Cache-Control: private, max-age=N` headers on all `/api/v1` read endpoints
   (lists/search/recent/briefing/overview: 30–60s; single-page reads: 300s).
@@ -416,7 +418,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.6.1
 [0.6.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.6.0
 [0.5.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.5.2
 [0.5.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.5.0
