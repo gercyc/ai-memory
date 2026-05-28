@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- `ai-memory status` / `status --json` now includes passive process-scoped LLM
+  and embedding provider health based on the last real provider call, without
+  active probing or token spend ([#46]).
+
 ### Fixed
 - Claude Code hook installs on native Windows now render Git Bash-compatible
   `bash -c` commands that keep the POSIX `.sh` hook scripts and convert

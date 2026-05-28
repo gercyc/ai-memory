@@ -78,10 +78,12 @@ priors are at the [bottom](#influences-and-prior-art).
   (`pi` / `omp` aliases).
   Server runs local (loopback) OR on a homelab box (LAN/VPN/cloud)
   with bearer-token auth.
-- **Thin-client CLI.** `ai-memory bootstrap`, `purge-project`,
+- **Thin-client CLI.** `ai-memory status`, `bootstrap`, `purge-project`,
   `rename-project`, `lint`, `embed`, `forget-sweep`, `backup` are
   all HTTP clients of the running server - never touch SQLite or
-  wiki files directly. Server is the single source of truth.
+  wiki files directly. `status` also reports passive LLM/embedding
+  provider health from the last real provider call. Server is the
+  single source of truth.
 - **LLM is opt-in.** Zero-LLM mode still gives you FTS5 search +
   rule-based summarisation. Add a provider when you want consolidated
   pages and lint contradictions.
