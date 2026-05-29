@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-29
+
 ### Added
 - **`memory_read_page` MCP tool** (`read-only`) for fetching the FULL body of a
   wiki page — pass `path` for a direct lookup or `query` to fetch the top FTS5
@@ -451,7 +453,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.7.0
 [0.6.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.6.1
 [0.6.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.6.0
 [0.5.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.5.2
