@@ -95,16 +95,20 @@ the conversation calls for them:\n\
   OpenCode / Cursor / Gemini → AGENTS.md).\n\
 \n\
 **When the current project comes up empty, broaden — don't stop.** \
-`memory_query` searches only ONE project (the current one); there is \
-NO global 'search everything' mode. If a query returns nothing useful, \
-the knowledge may live in a SIBLING project — shared `infra`, `ops`, \
-or a related app. Re-run `memory_query` with explicit \
-`scopes: [{workspace, project}]` naming those projects; don't conclude \
-'we never recorded it' after one project misses. Note also that \
-`memory_query` returns SNIPPETS, not full page bodies — an empty or \
-short snippet does NOT mean the page is empty (a large page can match \
-outside the snippet window); to read the whole page use \
-`memory_read_page` (by `path`, or a `query` for the top hit's body).\n\
+`memory_query` searches only ONE project (the current one) by default. \
+If a query returns nothing useful, the knowledge may live in a SIBLING \
+project — shared `infra`, `ops`, or a related app. Two ways to \
+broaden: (a) re-run with explicit `scopes: [{workspace, project}]` \
+when you know which projects to check; (b) pass `global=true` to \
+search EVERY project in EVERY workspace at once when you don't know \
+where the knowledge lives — each hit then carries its workspace + \
+project name. `global=true` cannot be combined with \
+`scopes`/`project`/`workspace`. Don't conclude 'we never recorded \
+it' after one project misses. Note also that `memory_query` returns \
+SNIPPETS, not full page bodies — an empty or short snippet does NOT \
+mean the page is empty (a large page can match outside the snippet \
+window); to read the whole page use `memory_read_page` (by `path`, \
+or a `query` for the top hit's body).\n\
 \n\
 The routing snippet this very text comes from can also be installed \
 into the project's CLAUDE.md / AGENTS.md so the guidance survives \
@@ -1533,22 +1537,44 @@ mod tests {
     #[test]
     fn prompts_teach_cross_project_search_strategy() {
         // Regression: a single-project miss must not read as "never recorded".
-        // Both surfaces must point the agent at `scopes` and warn that query
-        // returns snippets, not full page bodies. (Learned the hard way when
-        // cluster-access info lived in a sibling `infra` project.)
+        // Both surfaces must point the agent at `scopes` **and** at
+        // `global=true` (the two broadening modes), warn that query returns
+        // snippets (not full page bodies), and NOT contain the contradictory
+        // legacy "no global mode" phrasing that briefly shipped in #56.
+        // (Learned the hard way when cluster-access info lived in a sibling
+        // `infra` project.)
         for prompt in [MEMORY_INSTRUCTIONS, ai_memory_core::SNIPPET_BODY] {
             assert!(
                 prompt.contains("scopes"),
-                "prompt must teach broadening the search via `scopes`"
+                "prompt must teach broadening via `scopes`"
+            );
+            assert!(
+                prompt.contains("global=true") || prompt.contains("global = true"),
+                "prompt must also teach broadening via `global=true`"
             );
             assert!(
                 prompt.contains("sibling") || prompt.contains("SIBLING"),
                 "prompt must mention knowledge can live in a sibling project"
             );
             assert!(
-                prompt.contains("snippet"),
+                prompt.contains("snippet") || prompt.contains("SNIPPET"),
                 "prompt must warn that query returns snippets, not full bodies"
             );
+            // Guard against the contradiction: standalone prose must not say
+            // a global mode doesn't exist when the bullet/table-row above it
+            // advertises `global=true`.
+            let no_global_phrases = [
+                "no global \"search everything\" mode",
+                "NO global 'search everything' mode",
+                "no global 'search everything' mode",
+                "NO global \"search everything\" mode",
+            ];
+            for phrase in no_global_phrases {
+                assert!(
+                    !prompt.contains(phrase),
+                    "prompt must not contain the contradictory phrase {phrase:?}"
+                );
+            }
         }
     }
 

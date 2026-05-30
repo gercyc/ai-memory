@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`memory_query { global: true }` — cross-project global search** that
+  reaches every project in every workspace in one call, with each hit
+  annotated by its workspace + project so the agent can tell where it
+  came from. Use when the agent doesn't know which project holds a
+  cross-cutting note (shared infra/ops, a sibling app). Mutually
+  exclusive with `scopes`/`project`/`workspace`. Routing snippet +
+  `MEMORY_INSTRUCTIONS` now teach both broadening modes (`scopes` for
+  named siblings, `global=true` for unknown locations) and explicitly
+  warn that `memory_query` returns snippets — use `memory_read_page`
+  for full bodies. The prompt-surface contradiction the original PR
+  shipped ("there is no global 'search everything' mode" right after
+  the bullet advertising `global=true`) was caught in the post-merge
+  audit and rewritten; the prompt regression test now refuses any
+  variant of that legacy phrasing
+  ([#56], thanks @djalmajr).
+- **Cross-project wiki links + dependency graph.** Wikilinks gain an
+  explicit scope qualifier: `[[project:path.md]]` for a sibling project
+  in the same workspace, `[[workspace/project:path.md]]` for another
+  workspace. Bare links are unchanged (resolve within the source's own
+  project). `links.to_workspace` / `links.to_project` join the primary
+  key so the same `to_path` can land in two different projects without
+  colliding. `memory_lint` now reports dangling cross-project refs
+  (typo'd project vs missing/renamed target page), `memory_briefing`
+  exposes `cross_project_dependents` / `cross_project_dependencies`
+  per project, and `GET /api/v1/graph` returns the resolved cross-
+  project edges for a graph view. Migration V13 rebuilds the `links`
+  table preserving existing rows as `(to_workspace=NULL,
+  to_project=NULL)` — same "local" semantics as before
+  ([#57], thanks @djalmajr).
+
+### Changed
+- **FTS5 queries OR-join bare multi-word inputs** instead of the
+  pre-existing AND default. A natural-language query like
+  `"have we discussed cross project search strategy"` previously
+  required every word to co-occur in one page — near-zero recall for
+  multi-word queries, which the caller silently mistook for "never
+  recorded". OR + BM25 ranking (callers already `ORDER BY rank`) keeps
+  the best-matching pages at the top of the list, so the user-visible
+  top-N is still AND-ish; OR just adds a relevant tail instead of
+  returning nothing. Explicit FTS5 syntax (`OR`/`AND`/`NOT`/`NEAR`,
+  quoted phrases, parens) is detected and preserved verbatim so the
+  exact-match escape hatch stays available. 5 new unit tests guard the
+  preservation contract (post-merge audit). Migration V12 rebuilds the
+  FTS tables with `unicode61 remove_diacritics 2` so accent-free
+  Portuguese queries (`"descricao da sessao"`) match accented stored
+  text (`"descrição da sessão"`); contentless FTS — source rows
+  untouched ([#58], thanks @djalmajr).
+- **MCP write tools now honour the session's project (and create
+  named projects on demand).** Three correctness fixes on
+  `memory_write_page` / `memory_lint` / `memory_forget_sweep`:
+  - A `memory_write_page { project: "X" }` for a project name that
+    doesn't exist used to silently fall through to the session's
+    active project (find-only resolution); writes meant for a fresh
+    project polluted the current one. A new `write_target_ids`
+    helper uses **get-or-create** for an explicit project name, so
+    a named write always lands where the agent asked.
+  - `memory_lint` + `memory_forget_sweep` previously always targeted
+    the server's baked `--project` regardless of the session, so a
+    cross-project lint or retention sweep could never reach the
+    project the user was actually working in. Both now resolve
+    through the same find-only `effective_ids_for_read_args` path
+    the read tools use, with the hook-published active project as
+    the fallback.
+  - Both `lint` / `sweep` and the new `write_page` add explicit
+    `workspace` + `project` args (defaulted to current session,
+    documented with the v0.5.2 "**Omit unless the user explicitly
+    names a *different* project.**" tail). 2 regression tests cover
+    "Bug B" (explicit-project write must create + land) and
+    "Bug C" (sweep must evaluate the named project, not the baked
+    default) ([#59], thanks @djalmajr).
+
 ## [0.7.1] - 2026-05-29
 
 ### Fixed

@@ -81,13 +81,17 @@ scales automatically to how long it's been since the last activity
 
 ### When the current project comes up empty — broaden the search
 
-`memory_query` searches only the **current** project; there is **no
-global "search everything" mode**. If a search comes back empty or
-thin, the knowledge may live in a **sibling project** — shared `infra`,
-`ops`, or a related app. Re-run `memory_query` with explicit `scopes`
-naming those projects, e.g. `scopes: [{ "workspace": "default",
-"project": "infra" }]`. Don't conclude "we never recorded it" after a
-single project misses.
+`memory_query` searches only the **current** project by default. If a
+search comes back empty or thin, the knowledge may live in a **sibling
+project** — shared `infra`, `ops`, or a related app. Don't conclude
+"we never recorded it" after a single project misses; broaden instead:
+
+- **Know which projects to check?** Re-run with explicit `scopes`, e.g.
+  `scopes: [{ "workspace": "default", "project": "infra" }]`.
+- **Don't know where it lives?** Pass `global=true` to search every
+  project in every workspace at once. Each hit is annotated with its
+  workspace + project so you can tell where it came from. `global=true`
+  cannot be combined with `scopes`/`project`/`workspace`.
 
 `memory_query` returns **snippets, not full page bodies** — an empty or
 short snippet does **not** mean the page is empty (a large page can

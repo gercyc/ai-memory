@@ -121,6 +121,55 @@ mod tests {
         assert_eq!(prepare_fts5_query("quick OR slow"), "quick OR slow");
     }
 
+    /// AND is the FTS5 default but operators can be explicit — when the
+    /// caller writes one, the OR-join must NOT mangle it into
+    /// `foo OR AND OR bar`. Same for NOT and NEAR. (The escape hatch from
+    /// the broad-recall default is what makes the OR-join safe to land.)
+    #[test]
+    fn explicit_and_operator_is_preserved() {
+        assert_eq!(prepare_fts5_query("foo AND bar"), "foo AND bar");
+    }
+
+    #[test]
+    fn explicit_not_operator_is_preserved() {
+        assert_eq!(prepare_fts5_query("foo NOT bar"), "foo NOT bar");
+    }
+
+    #[test]
+    fn explicit_near_operator_is_preserved() {
+        assert_eq!(prepare_fts5_query("foo NEAR bar"), "foo NEAR bar");
+    }
+
+    /// A query containing a quoted phrase is treated as explicit FTS5
+    /// syntax — `"exact phrase" baz` must not become
+    /// `"exact" OR "phrase" OR baz` (which destroys the phrase semantics).
+    /// The exact assertion is "space-joined, not OR-joined"; what the
+    /// individual tokens look like after `prepare_fts5_token` is a
+    /// separate concern (and unchanged from pre-#58 behaviour).
+    #[test]
+    fn quoted_phrase_query_is_not_or_joined() {
+        let q = prepare_fts5_query("\"exact phrase\" baz");
+        assert!(
+            !q.contains(" OR "),
+            "explicit quoted-phrase query must not get OR-joined; got {q}"
+        );
+    }
+
+    /// Same escape-hatch logic for parenthesised sub-expressions —
+    /// `(foo OR bar) AND baz` must survive unmangled.
+    #[test]
+    fn parenthesised_query_is_not_or_joined() {
+        let q = prepare_fts5_query("(foo OR bar) AND baz");
+        assert!(
+            !q.contains("OR (foo"),
+            "parens detection must skip OR-join entirely; got {q}"
+        );
+        assert!(
+            q.contains("AND"),
+            "explicit AND inside parens query must survive; got {q}"
+        );
+    }
+
     #[test]
     fn known_columns_are_preserved() {
         assert_eq!(prepare_fts5_query("title:handoff"), "title:handoff");
