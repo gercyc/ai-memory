@@ -160,7 +160,7 @@ backpressure, or single-writer SQLite actor.
 | `pages_fts` | FTS5 virtual table over `(title, body)`, auto-synced by triggers. |
 | `sessions`, `observations` | Hook capture, full audit log. |
 | `observations_fts` | FTS5 virtual table over raw observation `(title, body)`, used only as bounded fallback. |
-| `links` | Wikilink / markdown cross-references with `to_page_id` nullable for unresolved forward links. |
+| `links` | Wikilink / markdown cross-references. `to_page_id` (a global PageId) is nullable for unresolved forward links. `to_workspace` / `to_project` carry a cross-project scope (NULL = the source page's own project). |
 | `handoffs` | Typed cross-agent handoff records (open / accepted / expired). |
 | `page_embeddings` | Optional vector rows for latest pages, with `(provider, model, dim)` denormalised so hybrid search can ignore stale vectors after an embedding config change and report missing-embedding diagnostics. |
 | `audit_log` | Every mutation, addressable by `at DESC`. |
@@ -184,6 +184,32 @@ focus and pending items. Use `invariant` for high-resistance project
 context, identity, rules, or user preferences; consolidation should not
 rewrite an existing invariant slot unless new observations directly
 contradict specific existing content.
+
+## Cross-project links
+
+Pages normally link within their own project (`[[decisions/0001.md]]`,
+`[label](../gotchas/x.md)`). A wikilink can also name another project so
+that dependencies between projects become explicit edges in the graph:
+
+* `[[project:path.md]]` — a sibling project in the same workspace.
+* `[[workspace/project:path.md]]` — a project in another workspace.
+
+The parser (`ai-memory-wiki::extract_links`) yields a `LinkTarget
+{ workspace, project, path }`; the store resolves it against the named
+project's latest page and records the scope in `links.to_workspace` /
+`links.to_project` (NULL = the source's own project, the common case).
+Resolution is deferred-safe: a link to a page that does not exist yet
+stays `to_page_id = NULL` and is repointed by
+`refresh_incoming_links_for_path` when that page later lands — across
+projects, not only within one.
+
+Because `to_page_id` is a global id and `ReaderPool::page_links` joins by
+id without a project filter, a resolved cross-project link surfaces as a
+backlink on its target for free; `RelatedPage` carries the source's
+`workspace` / `project` so the dependency is labelled and navigable. This
+is what turns the per-project wikis into one dependency graph (see also
+the `memory_lint` dangling-ref check, the briefing dependents counts, and
+the `/api/v1/graph` endpoint).
 
 ## Crate layout
 
