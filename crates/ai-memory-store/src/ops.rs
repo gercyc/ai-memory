@@ -2011,4 +2011,81 @@ mod tests {
             .unwrap();
         assert_eq!(src_pages, 1, "rollback must preserve source pages");
     }
+
+    /// V18 integrity triggers: an INSERT whose `workspace_id` disagrees with
+    /// the project's actual workspace ABORTs (the split-brain a stale hook
+    /// cache would otherwise create), while the consistent pair inserts fine.
+    #[test]
+    fn insert_with_mismatched_workspace_is_rejected() {
+        use ai_memory_core::ObservationKind;
+
+        let (_tmp, mut conn, ws, proj) = fresh_db();
+        let other_ws = get_or_create_workspace(&mut conn, "other").unwrap();
+
+        // A page under the WRONG workspace (project lives in `ws`) is refused.
+        let mut bad_page = page(ws, proj, "notes/a.md", "body");
+        bad_page.workspace_id = other_ws;
+        assert!(
+            upsert_page(&mut conn, &bad_page).is_err(),
+            "page insert with mismatched workspace must abort"
+        );
+
+        // The consistent pair inserts fine.
+        upsert_page(&mut conn, &page(ws, proj, "notes/a.md", "body")).unwrap();
+
+        // The session insert is guarded too: a mismatched pair aborts.
+        let bad_sid = SessionId::new();
+        assert!(
+            begin_session(
+                &mut conn,
+                &NewSession {
+                    id: bad_sid,
+                    workspace_id: other_ws,
+                    project_id: proj,
+                    agent_kind: AgentKind::ClaudeCode,
+                    cwd: None,
+                },
+            )
+            .is_err(),
+            "session insert with mismatched workspace must abort"
+        );
+
+        let sid = SessionId::new();
+        begin_session(
+            &mut conn,
+            &NewSession {
+                id: sid,
+                workspace_id: ws,
+                project_id: proj,
+                agent_kind: AgentKind::ClaudeCode,
+                cwd: None,
+            },
+        )
+        .unwrap();
+
+        // The split-brain case the maintainer flagged: a hook writes an
+        // observation with a stale workspace id for a moved project.
+        let mismatched_obs = NewObservation {
+            session_id: sid,
+            workspace_id: other_ws,
+            project_id: proj,
+            kind: ObservationKind::UserPrompt,
+            extension: None,
+            source_event: None,
+            title: "t".into(),
+            body: "b".into(),
+            importance: 5,
+        };
+        assert!(
+            insert_observation(&mut conn, &mismatched_obs).is_err(),
+            "observation insert with mismatched workspace must abort"
+        );
+
+        // Same observation under the correct workspace is accepted.
+        let good_obs = NewObservation {
+            workspace_id: ws,
+            ..mismatched_obs
+        };
+        insert_observation(&mut conn, &good_obs).unwrap();
+    }
 }
