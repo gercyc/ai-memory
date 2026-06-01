@@ -146,11 +146,15 @@ a low-level re-stamp:
    they follow with no re-stamp.
 5. `fs::rename` the project dir
    `<wiki>/<from_ws>/<proj>` → `<wiki>/<to_ws>/<proj>` (atomic within one
-   wiki root). The destination dir is pre-checked to be absent first. The
-   SQL commits before the rename, but the move is **all-or-nothing**: if the
-   rename fails, the SQL re-stamp is rolled back (the op is symmetric) and
-   the call returns `move aborted (nothing changed)` — never a
-   DB-ahead-of-disk split-brain.
+   wiki root). The destination dir is pre-checked to be absent first. Ordering
+   is **rename-FIRST, SQL-commit-LAST**, so the **DB is never ahead of disk**:
+   a rename failure touches nothing; a crash between the two steps leaves at
+   most an orphan dir at the destination with the DB still wholly at the
+   source (recoverable), never a DB row pointing at a missing file. A SQL
+   failure renames the dir back, so the move is all-or-nothing. During the
+   brief window, any watcher reindex of the moved files attempts an INSERT
+   under `(dst_ws, proj)` that the V18 pairing trigger rejects cleanly (the
+   project still lives in `src_ws`), so no split-brain row is created.
 
 This is O(1) (one transaction + one rename), re-embeds nothing, and
 **preserves everything** — sessions, observations, handoffs and the full
@@ -177,14 +181,23 @@ leaving the source intact. An unreadable source file is skipped and also
 blocks the purge (`source_purged: false`) so a fixed re-run is safe
 (re-running is idempotent — copied pages just supersede).
 
-**Same-path conflicts → duplicate (keep both).** When a source page's path
-already exists in the destination with **different** content, the source
-page is landed under a de-duplicated path
-(`<stem>-from-<src_workspace>.md`, then `-2`, `-3`, …) so neither version is
-lost; each remap is listed in the response `conflicts` array. Identical
-content is a no-op supersession at the same path. (Wikilinks pointing at the
-old path are not rewritten — the lossless `true-move` path is the way to
-preserve paths and links.)
+**Same-path conflicts (`on_conflict`).** When a source page's path already
+exists in the destination with **different** content, the policy decides
+(identical content is always a no-op supersession at the same path):
+
+- **`block`** (default) — abort the whole move with 409, listing the
+  conflicting paths; the source is left intact. The safe default for a
+  destructive op: nothing is overwritten or split silently. The operator
+  resolves the conflicts or re-runs with an explicit policy.
+- **`overwrite`** — the source page supersedes the destination page at the
+  same path (the destination's prior version becomes history).
+- **`duplicate`** — keep both: the source page lands under a de-duplicated
+  path (`<stem>-from-<src_workspace>.md`, then `-2`, …). Note: wikilinks
+  pointing at the original path are not rewritten, so the lossless
+  `true-move` path remains the way to preserve paths and links.
+
+Every conflict (overwrite/duplicate) is listed in the response `conflicts`
+array (`path` → `moved_to`). Set the policy via `--on-conflict` on the CLI.
 
 **What does NOT migrate (merge case only):** in the `copy-purge` path the
 source's `sessions`, `observations`, and `handoffs` (the raw episodic

@@ -371,6 +371,13 @@ pub struct MoveProjectArgs {
     /// and the schema rejects any stale write).
     #[arg(long)]
     pub force: bool,
+    /// Merge conflict policy (copy-purge path only): what to do when a source
+    /// page's path already exists in the destination with different content.
+    /// `block` (default) aborts and lists the conflicts; `overwrite` lets the
+    /// source supersede the destination page; `duplicate` keeps both (source
+    /// lands under a de-duplicated path).
+    #[arg(long, value_parser = ["block", "overwrite", "duplicate"], default_value = "block")]
+    pub on_conflict: String,
 }
 
 /// Arguments for `install-instructions`.

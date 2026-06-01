@@ -15,6 +15,7 @@ struct MoveProjectRequest {
     to_workspace: String,
     confirm: bool,
     force: bool,
+    on_conflict: String,
 }
 
 /// Run the `move-project` subcommand.
@@ -59,6 +60,7 @@ pub async fn run(config: &Config, args: MoveProjectArgs) -> Result<()> {
             to_workspace: args.to_workspace.clone(),
             confirm: true,
             force: args.force,
+            on_conflict: args.on_conflict.clone(),
         },
     )
     .await?;

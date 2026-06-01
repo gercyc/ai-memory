@@ -37,6 +37,7 @@ async fn make_state(tmp: &TempDir) -> (AdminState, Store) {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
+        on_project_moved: None,
     };
     (state, store)
 }

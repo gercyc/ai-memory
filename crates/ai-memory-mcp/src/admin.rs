@@ -100,6 +100,14 @@ pub struct AdminState {
     /// pointer correct after a move. Empty `ActiveProject::new()` when no
     /// hook router is attached (admin-only tests).
     pub active_project: ActiveProject,
+    /// Optional hook to PROACTIVELY evict the hook router's per-cwd
+    /// `(workspace_id, project_id)` cache for a project that just moved
+    /// workspaces. Called with the moved `project_id` after a successful move
+    /// so the next hook event re-resolves cleanly instead of tripping the
+    /// pairing trigger on a stale cached pair first. Fire-and-forget
+    /// (best-effort); the trigger + router re-resolve are the correctness net.
+    /// `None` when no hook router is attached (stdio / admin-only tests).
+    pub on_project_moved: Option<std::sync::Arc<dyn Fn(ProjectId) + Send + Sync>>,
 }
 
 /// JSON request body for `POST /admin/bootstrap`.
@@ -1613,6 +1621,28 @@ struct MoveProjectRequest {
     /// stale write fail cleanly rather than corrupt).
     #[serde(default)]
     force: bool,
+    /// Policy for the copy-purge MERGE path when a source page's path already
+    /// exists in the destination with DIFFERENT content. Ignored by true-move
+    /// (no copy). Default `block` — the safe choice for a destructive op.
+    #[serde(default)]
+    on_conflict: OnConflict,
+}
+
+/// What to do when a merged page path collides with an existing destination
+/// page of different content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum OnConflict {
+    /// Abort the whole move (source untouched), listing the conflicting paths.
+    /// The operator resolves them or picks another policy explicitly.
+    #[default]
+    Block,
+    /// The source page supersedes the destination page at the same path (the
+    /// destination's prior version becomes history).
+    Overwrite,
+    /// Keep BOTH: the source page lands under a de-duplicated path
+    /// (`<stem>-from-<src_workspace>.md`), reported in `conflicts`.
+    Duplicate,
 }
 
 /// Wire-format report returned by `POST /admin/move-project`.
@@ -1672,17 +1702,20 @@ pub struct PathConflict {
     pub moved_to: String,
 }
 
-/// Lossless cross-workspace move: re-stamp the source project's
-/// `workspace_id` across every domain table (one transaction, same
-/// `project_id`), then rename its on-disk dir to the destination workspace.
-/// The caller has already verified the destination has no same-named project.
+/// Lossless cross-workspace move: rename the project's on-disk dir to the
+/// destination workspace, then re-stamp its `workspace_id` across every domain
+/// table (one transaction, same `project_id`). The caller has already verified
+/// the destination has no same-named project.
 ///
-/// Ordering matters: the SQL re-stamp commits FIRST, then the dir is renamed.
-/// When the rename fires filesystem events at the new path, the watcher
-/// re-derives `(workspace_id, project_id)` from the path — which now matches
-/// what the DB already holds — so the upsert is a sha256 no-op. Renaming
-/// before the commit would briefly expose new-path files whose derived
-/// workspace disagrees with the DB.
+/// Ordering is deliberately rename-FIRST, SQL-commit-LAST so the **DB is never
+/// ahead of disk**: a rename failure touches nothing; a crash between the two
+/// steps leaves at most an orphan dir at the destination with the DB still
+/// wholly pointing at the source (recoverable), never a DB row pointing at a
+/// missing file. On a SQL failure the dir is renamed back (the op is
+/// symmetric), so the move is all-or-nothing. During the brief window between
+/// rename and commit, any watcher reindex of the moved files attempts an INSERT
+/// under `(dst_ws, proj)` that the V18 pairing trigger rejects cleanly (the
+/// project still lives in `src_ws`), so no split-brain row is created.
 async fn true_move_project(
     state: &Arc<AdminState>,
     req: &MoveProjectRequest,
@@ -1702,8 +1735,7 @@ async fn true_move_project(
     };
 
     // A true move targets a FRESH destination, so its dir must not already
-    // exist. Check BEFORE touching the DB so a stale leftover can never lead to
-    // a DB-ahead-of-disk split-brain or a clobbered directory.
+    // exist. Check before the rename so a stale leftover can never be clobbered.
     let dst_dir = state.wiki.project_root(dst_ws, src_proj);
     if dst_dir.exists() {
         return (
@@ -1717,61 +1749,66 @@ async fn true_move_project(
         );
     }
 
+    // 1) Rename the dir FIRST — before any DB change. A failure here leaves
+    //    everything untouched.
+    if let Err(e) = state.wiki.rename_project_dir(src_proj, src_ws, dst_ws) {
+        warn!(
+            error = %e,
+            "true-move: dir rename failed before any DB change — nothing moved"
+        );
+        return internal_err(format!(
+            "move aborted (nothing changed): on-disk dir rename failed: {e}"
+        ));
+    }
+
+    // 2) Re-stamp the DB LAST. On failure, rename the dir back so the move is
+    //    all-or-nothing and the DB never ends up ahead of disk.
     let summary = match state
         .writer
         .move_project_workspace(src_proj, src_ws, dst_ws)
         .await
     {
         Ok(s) => s,
-        Err(StoreError::NotFound(msg)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": msg })),
-            );
+        Err(e) => {
+            let src_dir = state.wiki.project_root(src_ws, src_proj);
+            match state.wiki.rename_project_dir(src_proj, dst_ws, src_ws) {
+                Ok(()) => {
+                    warn!(
+                        error = %e,
+                        "true-move: DB re-stamp failed; renamed the dir back — nothing moved"
+                    );
+                    return match e {
+                        StoreError::NotFound(msg) => (
+                            StatusCode::NOT_FOUND,
+                            Json(serde_json::json!({ "error": msg })),
+                        ),
+                        other => internal_err(format!(
+                            "move aborted (nothing changed): DB re-stamp failed: {other}"
+                        )),
+                    };
+                }
+                Err(rollback_err) => {
+                    // Double fault: files are at the destination but the DB
+                    // re-stamp failed AND the rename-back failed. Surface a
+                    // precise manual-repair message.
+                    error!(
+                        error = %e,
+                        rollback_error = %rollback_err,
+                        src = %src_dir.display(),
+                        dst = %dst_dir.display(),
+                        "true-move: DB re-stamp failed AND dir rename-back failed — manual repair required"
+                    );
+                    return internal_err(format!(
+                        "INCONSISTENT STATE: files moved but DB re-stamp failed ({e}) and dir \
+                         rename-back also failed ({rollback_err}); manually move {} -> {} or finish \
+                         the re-stamp",
+                        dst_dir.display(),
+                        src_dir.display()
+                    ));
+                }
+            }
         }
-        Err(e) => return internal_err(e.to_string()),
     };
-
-    // Land the files where the re-stamped rows now point. The SQL is already
-    // committed, so a rename failure would leave the DB ahead of disk. Make the
-    // move all-or-nothing: on failure, roll the DB re-stamp back (the op is
-    // symmetric) so either both rows AND files move, or neither does.
-    if let Err(e) = state.wiki.rename_project_dir(src_proj, src_ws, dst_ws) {
-        let src_dir = state.wiki.project_root(src_ws, src_proj);
-        match state
-            .writer
-            .move_project_workspace(src_proj, dst_ws, src_ws)
-            .await
-        {
-            Ok(_) => {
-                warn!(
-                    error = %e,
-                    "true-move: dir rename failed; rolled the DB re-stamp back — nothing moved"
-                );
-                return internal_err(format!(
-                    "move aborted (nothing changed): on-disk dir rename failed: {e}"
-                ));
-            }
-            Err(rollback_err) => {
-                // Double fault: rows are in the destination workspace but files
-                // remain at the source AND the revert failed. Surface a precise
-                // manual-repair message.
-                error!(
-                    error = %e,
-                    rollback_error = %rollback_err,
-                    src = %src_dir.display(),
-                    dst = %dst_dir.display(),
-                    "true-move: dir rename failed AND DB rollback failed — manual repair required"
-                );
-                return internal_err(format!(
-                    "INCONSISTENT STATE: rows moved but dir rename failed ({e}) and DB rollback \
-                     also failed ({rollback_err}); manually move {} -> {} or re-stamp the project back",
-                    src_dir.display(),
-                    dst_dir.display()
-                ));
-            }
-        }
-    }
 
     // Keep the in-process active-project pointer correct: the project_id is
     // unchanged, only its workspace moved. If a hook had published this project
@@ -1779,6 +1816,10 @@ async fn true_move_project(
     // resolves cleanly (rather than tripping the pairing trigger first).
     if state.active_project.get().map(|(_, p)| p) == Some(src_proj) {
         state.active_project.set(dst_ws, src_proj);
+    }
+    // Proactively drop any stale per-cwd cache entry for the moved project.
+    if let Some(evict) = &state.on_project_moved {
+        evict(src_proj);
     }
 
     let report = MoveProjectReport {
@@ -1945,6 +1986,38 @@ async fn handle_move_project(
         Err(e) => return internal_err(e.to_string()),
     };
 
+    // Pre-scan for same-path conflicts (destination already holds the path with
+    // DIFFERENT content). Under the default `block` policy, abort the WHOLE move
+    // now — before anything is copied — so the source stays intact and the
+    // operator resolves them or re-runs with an explicit overwrite/duplicate.
+    if req.on_conflict == OnConflict::Block {
+        let mut blocking: Vec<String> = Vec::new();
+        for s in &summaries {
+            let Ok(path) = PagePath::new(s.path.clone()) else {
+                continue;
+            };
+            if let Ok(Some(existing)) = state
+                .reader
+                .page_body_by_ids(dst_ws, dst_proj, s.path.as_str())
+                .await
+                && let Ok(md) = state.wiki.read_page(src_ws, src_proj, &path)
+                && existing.body != md.body
+            {
+                blocking.push(s.path.clone());
+            }
+        }
+        if !blocking.is_empty() {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "destination already has pages at these paths with different content; \
+                              resolve them or re-run with on_conflict=overwrite or on_conflict=duplicate",
+                    "conflicts": blocking,
+                })),
+            );
+        }
+    }
+
     // Carry the source page embeddings over verbatim instead of recomputing
     // them — embedding is the dominant per-page cost of a bulk move. Writes go
     // through an embedder-less Wiki so `write_page` never re-embeds; we then
@@ -2010,31 +2083,43 @@ async fn handle_move_project(
                 continue;
             }
         };
-        // Same-path conflict → duplicate (keep both): if the destination already
-        // holds this path with DIFFERENT content, land the source page under a
-        // de-duplicated path so neither version is lost. Identical content falls
-        // through to a no-op supersession at the same path.
+        // Same-path conflict (destination holds this path with DIFFERENT
+        // content): apply the on_conflict policy. Identical content always falls
+        // through to a no-op supersession at the same path. `block` was already
+        // handled by the pre-scan above (we never get here with a real conflict).
         let dest_path = match state
             .reader
             .page_body_by_ids(dst_ws, dst_proj, s.path.as_str())
             .await
         {
-            Ok(Some(existing)) if existing.body != md.body => {
-                let deduped = dedup_dest_path(
-                    &state,
-                    dst_ws,
-                    dst_proj,
-                    &s.path,
-                    &req.from_workspace,
-                    &used_dest_paths,
-                )
-                .await;
-                conflicts.push(PathConflict {
-                    path: s.path.clone(),
-                    moved_to: deduped.as_str().to_string(),
-                });
-                deduped
-            }
+            Ok(Some(existing)) if existing.body != md.body => match req.on_conflict {
+                OnConflict::Duplicate => {
+                    let deduped = dedup_dest_path(
+                        &state,
+                        dst_ws,
+                        dst_proj,
+                        &s.path,
+                        &req.from_workspace,
+                        &used_dest_paths,
+                    )
+                    .await;
+                    conflicts.push(PathConflict {
+                        path: s.path.clone(),
+                        moved_to: deduped.as_str().to_string(),
+                    });
+                    deduped
+                }
+                // Overwrite: the source page supersedes the destination page at
+                // the same path (the dest's prior version becomes history).
+                OnConflict::Overwrite => {
+                    conflicts.push(PathConflict {
+                        path: s.path.clone(),
+                        moved_to: s.path.clone(),
+                    });
+                    path.clone()
+                }
+                OnConflict::Block => path.clone(),
+            },
             _ => path.clone(),
         };
         used_dest_paths.insert(dest_path.as_str().to_string());
@@ -2152,6 +2237,11 @@ async fn handle_move_project(
     // to the (new) project rather than the deleted id.
     if state.active_project.get().map(|(_, p)| p) == Some(src_proj) {
         state.active_project.clear();
+    }
+    // Proactively drop any stale per-cwd cache entry for the purged source
+    // project (its project_id no longer exists).
+    if let Some(evict) = &state.on_project_moved {
+        evict(src_proj);
     }
 
     let report = MoveProjectReport {
@@ -2636,6 +2726,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
+            on_project_moved: None,
         });
 
         let resp = router
@@ -2673,6 +2764,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
+            on_project_moved: None,
         });
         (tmp, router)
     }
@@ -2853,6 +2945,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
+            on_project_moved: None,
         });
 
         post_write_page(&router, "default", "doomed", "notes/x.md", "bye").await;
@@ -2913,6 +3006,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: Some(pepper),
             active_project: ai_memory_core::ActiveProject::new(),
+            on_project_moved: None,
         });
         // Wrap in a middleware that stamps the AuthLevel ourselves —
         // the real auth middleware lives in ai-memory-cli, and this
@@ -3198,6 +3292,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
+            on_project_moved: None,
         });
         // Inject a Root level so we're past the require_root gate;
         // the 503 must come from require_pepper.

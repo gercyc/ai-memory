@@ -45,6 +45,7 @@ async fn make_state(tmp: &TempDir) -> (AdminState, Store) {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
+        on_project_moved: None,
     };
     (state, store)
 }
@@ -363,6 +364,7 @@ async fn move_project_carries_source_embedding() {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
+        on_project_moved: None,
     };
 
     // Seed source page (gets a synthetic embedding on write).
@@ -573,6 +575,7 @@ async fn make_state_with_embedder(tmp: &TempDir) -> (AdminState, Store) {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
+        on_project_moved: None,
     };
     (state, store)
 }
@@ -722,11 +725,12 @@ fn build_state(store: &Store, tmp: &TempDir) -> AdminState {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
+        on_project_moved: None,
     }
 }
 
-/// W5: a same-path conflict in a copy-purge merge de-duplicates the source page
-/// so BOTH versions survive, and the remap is reported.
+/// on_conflict=duplicate: a same-path conflict de-duplicates the source page so
+/// BOTH versions survive, and the remap is reported.
 #[tokio::test]
 async fn copy_purge_conflict_duplicates_keeping_both() {
     let tmp = TempDir::new().unwrap();
@@ -737,7 +741,8 @@ async fn copy_purge_conflict_duplicates_keeping_both() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst",
+                "confirm": true, "on_conflict": "duplicate" }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -778,6 +783,109 @@ async fn copy_purge_conflict_duplicates_keeping_both() {
         moved.body, "body SRC",
         "source page lands under the de-duped path"
     );
+}
+
+/// on_conflict=block (the DEFAULT): a same-path conflict aborts the whole move
+/// with 409, lists the conflicting paths, and leaves the source intact —
+/// nothing is copied to the destination.
+#[tokio::test]
+async fn copy_purge_conflict_blocks_by_default() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_state(&tmp).await;
+    seed_page(&store, &state.wiki, "src", "proj", "notes/a.md", "body SRC").await;
+    seed_page(
+        &store,
+        &state.wiki,
+        "src",
+        "proj",
+        "notes/clean.md",
+        "only in src",
+    )
+    .await;
+    seed_page(&store, &state.wiki, "dst", "proj", "notes/a.md", "body DST").await;
+
+    // No on_conflict → defaults to block.
+    let resp = post(
+        state,
+        "/admin/move-project",
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    let conflicts = body["conflicts"].as_array().unwrap();
+    assert_eq!(conflicts.len(), 1, "{body}");
+    assert_eq!(conflicts[0], "notes/a.md");
+
+    // Source untouched (NOT purged) and the destination got NONE of the pages.
+    let (src_ws, _) = ids(&store, "src", "proj").await;
+    assert!(
+        store
+            .reader
+            .find_project(src_ws, "proj".to_string())
+            .await
+            .unwrap()
+            .is_some(),
+        "block must leave the source intact"
+    );
+    let dst_paths: Vec<String> = store
+        .reader
+        .list_pages("dst", "proj")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    assert_eq!(
+        dst_paths,
+        vec!["notes/a.md"],
+        "destination unchanged — nothing copied"
+    );
+}
+
+/// on_conflict=overwrite: the source page supersedes the destination page at the
+/// same path; the destination ends with the source's content and no duplicate.
+#[tokio::test]
+async fn copy_purge_conflict_overwrites() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_state(&tmp).await;
+    seed_page(&store, &state.wiki, "src", "proj", "notes/a.md", "body SRC").await;
+    seed_page(&store, &state.wiki, "dst", "proj", "notes/a.md", "body DST").await;
+
+    let resp = post(
+        state,
+        "/admin/move-project",
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst",
+                "confirm": true, "on_conflict": "overwrite" }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["source_purged"], true, "{body}");
+    // Conflict reported, mapped to the same path (supersede, not duplicate).
+    let conflicts = body["conflicts"].as_array().unwrap();
+    assert_eq!(conflicts.len(), 1, "{body}");
+    assert_eq!(conflicts[0]["path"], "notes/a.md");
+    assert_eq!(conflicts[0]["moved_to"], "notes/a.md");
+
+    // Destination has exactly ONE page at the path, carrying the SOURCE content.
+    let dst_paths: Vec<String> = store
+        .reader
+        .list_pages("dst", "proj")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    assert_eq!(dst_paths, vec!["notes/a.md"], "no duplicate path");
+    let (dw, dp) = ids(&store, "dst", "proj").await;
+    let page = store
+        .reader
+        .page_body_by_ids(dw, dp, "notes/a.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(page.body, "body SRC", "source superseded the destination");
 }
 
 /// W6: the copy-purge (merge) path carries the source embedding verbatim onto
