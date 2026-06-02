@@ -140,10 +140,22 @@ breadcrumbs, rendered markdown, metadata, and FTS5 search. In rendered
 pages, `[[wiki links]]` become clickable links to the target page —
 `[[path]]`, `[[path|label]]`, `[[project:path]]`, and
 `[[workspace/project:path]]` are all supported (resolved against the
-current page's project unless the target carries its own scope). If the
-server has `AI_MEMORY_AUTH_TOKEN` set, the browser uses HTTP Basic auth:
-leave the username blank and paste the token as the password. MCP and
-hook clients continue to use `Authorization: Bearer <token>`.
+current page's project unless the target carries its own scope).
+`[[…]]` stays literal inside fenced code (` ``` ` and `~~~` close
+only by their own glyph), inline `` `…` `` code, and 4-space-indented
+code; external schemes inside the brackets (`http://`, `https://`,
+`mailto:`, `data:`, `javascript:`, `vbscript:`, `tel:`, `file:`)
+stay literal too. If the server has `AI_MEMORY_AUTH_TOKEN` set, the
+browser uses HTTP Basic auth: leave the username blank and paste the
+token as the password. MCP and hook clients continue to use
+`Authorization: Bearer <token>`.
+
+To host the web UI under a URL subpath behind a reverse proxy, the
+`--base-path` / `--web-slug` flags do the work — see
+[`docs/frontend-api.md`](frontend-api.md#6-custom-ui-hosting-and-base-paths)
+for the flag semantics and
+[`docs/https-via-proxy.md`](https-via-proxy.md#hosting-under-a-subpath)
+for the proxy-side walk-through.
 
 ![Project list homepage with four projects shown as cards with page counts and last activity.](web-projects-home.png)
 

@@ -10,7 +10,7 @@
 > re-explaining the architecture, the failed approaches, or the open
 > questions.
 
-[![status: v0.2 milestones complete](https://img.shields.io/badge/status-v0.2--complete-green)](docs/ARCHITECTURE.md)
+[![status: v0.8 multi-user](https://img.shields.io/badge/status-v0.8--multiuser-green)](docs/ARCHITECTURE.md)
 [![Rust](https://img.shields.io/badge/rust-1.95+-blue)](rust-toolchain.toml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -58,11 +58,15 @@ priors are at the [bottom](#influences-and-prior-art).
   "where you left off" block before its first prompt.
 - **Per-project isolation by construction.** Each project lives at
   `<wiki_root>/<workspace_id>/<project_id>/…` keyed by stable UUIDs.
-  By default `workspace = "default"` and `project = basename($cwd)`.
-  Drop a [`.ai-memory.toml` marker file](docs/marker-file.md) in any
-  ancestor directory to override either or opt into repo-root project
-  identity — perfect for multi-client consultancies, work/personal split,
-  mono-repos, or linked git worktrees.
+  Workspace defaults to `"default"`. Project is derived from `$cwd`:
+  CLI subcommands (`bootstrap`, `write-page`, `lint`, …) walk to the
+  main git repo root so all worktrees of the same repo share one
+  project identity; the hook router defaults to `basename($cwd)` and
+  can opt into the repo-root rule. Drop a
+  [`.ai-memory.toml` marker file](docs/marker-file.md) in any
+  ancestor directory to override either field explicitly — perfect for
+  multi-client consultancies, work/personal split, mono-repos, or
+  linked git worktrees.
   Same page path can exist in two projects without collision; a
   rename is one column update; a purge is one `rm -rf`.
 - **Karpathy-style LLM wiki.** Pages are compiled from observations
@@ -104,8 +108,11 @@ priors are at the [bottom](#influences-and-prior-art).
   on Postgres for X" or "annotate this as a project rule" and it calls
   `memory_write_page` to write a durable, git-versioned wiki page. From
   a terminal it's `ai-memory write-page --path decisions/0007-db.md
-  --title "Standardised on Postgres" --body "..." --pinned` (`--pinned`
-  exempts it from the decay sweep). Unlike a handoff (single-use) or an
+  --body $'# Standardised on Postgres\n\n...' --pinned`. `--pinned`
+  exempts it from the decay sweep; the H1 on the first line of
+  `--body` becomes the page title (omit `--title` — it's still
+  accepted, but LLM callers trip over JSON-escaping their way through
+  it, see issue #67). Unlike a handoff (single-use) or an
   auto-synthesised session page (rewritten on consolidation), a
   write-page note is yours: it shows up in `memory_query`, renders in
   `/web`, and stays until you change it.

@@ -10,7 +10,7 @@ on a homelab box where mistakes are harder to undo.
 |---|---|---|---|---|
 | `purge-project --confirm` | ✅ yes | the one project's data | no | Atomic `rm -rf <project_root>` on the namespaced disk path; sibling projects untouched. |
 | `rename-project --from --to` | ✅ yes | no | yes (rename back) | Column-only update on `projects.name`. The on-disk dir is keyed by `project_id` (UUID), so the rename never moves a file. |
-| `move-project --confirm` | ✅ yes | source only in the merge case | no | Fresh destination → lossless **true move** (re-stamp `workspace_id`, keep `project_id`, rename the dir): sessions/observations/handoffs + history all survive. Destination with a same-named project → **copy+purge merge**: only latest pages migrate. |
+| `move-project --confirm` | ✅ yes | source only in the merge case (a `Reject`-policy `purge_project` webhook can still abort the source teardown leaving everything intact) | no | Fresh destination → lossless **true move** (re-stamp `workspace_id`, keep `project_id`, rename the dir): sessions/observations/handoffs + history all survive. Destination with a same-named project → **copy+purge merge**: only latest pages migrate. |
 | `backup --output-path` | ✅ yes | no | n/a | Streams a gzipped tarball from the server's online `sqlite3 .backup` plus the wiki tree. Safe alongside the live writer. |
 | `restore --from <tarball>` | ❌ **stop the server first** | overwrites the data dir | no (without prior backup) | Refuses if any sibling `ai-memory` process is alive (sysinfo guard). |
 | `reset --confirm` | ❌ **stop the server first** | yes, all data | no | Refuses if any sibling `ai-memory` process is alive (sysinfo guard). |
@@ -201,13 +201,18 @@ at the same path):
   resolves the conflicts or re-runs with an explicit policy.
 - **`overwrite`** — the source page supersedes the destination page at the
   same path (the destination's prior version becomes history).
-- **`duplicate`** — keep both: the source page lands under a de-duplicated
-  path (`<stem>-from-<src_workspace>.md`, then `-2`, …). Note: wikilinks
-  pointing at the original path are not rewritten, so the lossless
-  `true-move` path remains the way to preserve paths and links.
+- **`duplicate`** — keep both: the source page lands at
+  `<stem>-from-<src_workspace_slug>.md`, then `-2`, `-3`, … on
+  further collisions. The `-from-` literal is the `DEDUP_FROM_TOKEN`
+  constant in `crates/ai-memory-mcp/src/admin.rs`; if you ever
+  change one, change the other. Wikilinks pointing at the original
+  path are not rewritten, so the lossless `true-move` path remains
+  the way to preserve paths and links.
 
 Every conflict (overwrite/duplicate) is listed in the response `conflicts`
-array (`path` → `moved_to`). Set the policy via `--on-conflict` on the CLI.
+array (`path` → `moved_to`). Set the policy via `--on-conflict` on the CLI
+or `"on_conflict": "block" | "overwrite" | "duplicate"` in the JSON body
+for direct `/admin/move-project` callers.
 
 **What does NOT migrate (merge case only):** in the `copy-purge` path the
 source's `sessions`, `observations`, and `handoffs` (the raw episodic
@@ -228,9 +233,19 @@ Failure modes:
 - **Missing `--confirm`** → 400.
 - **`from_workspace == to_workspace`** → 422 (use `rename-project`).
 - **Source project not found** → 404.
-- **True-move admission, rename, or SQL re-stamp failure** → 500 and no
-  committed move. If a rare rollback double-fault happens after the directory
-  moved but before SQL committed, the error includes the exact manual repair.
+- **Destination workspace directory already exists** (true-move only)
+  → 409 with `WikiError::DestinationExists` body — the destination
+  has on-disk content for the same `(workspace, project)` UUID pair
+  without a corresponding DB row; refuse and let the operator
+  reconcile manually.
+- **Block-policy same-path conflict** (copy-purge merge only) → 409
+  with `{"error": "...", "conflicts": [paths...]}` listing every
+  conflicting path. Re-run with `on_conflict=overwrite` or
+  `on_conflict=duplicate` to proceed.
+- **True-move admission or SQL re-stamp failure** → 500 and no
+  committed move. If a rare rollback double-fault happens after the
+  directory moved but before SQL committed, the error includes the
+  exact manual repair.
 
 ### `backup`
 

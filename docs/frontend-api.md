@@ -331,15 +331,46 @@ across all projects in the workspace:
 > Note: `last_open_handoff` is **not** consumed by the read API — the
 > handoff stays "open" and can still be accepted by the next agent.
 
+### 4.9 Cross-project graph
+
+```http
+GET /api/v1/graph
+```
+
+Returns every resolved wikilink whose endpoints sit in different
+projects, with both endpoints' workspace + project + path. Useful for
+rendering a project-level dependency view in the SPA.
+
+```json
+{
+  "edges": [
+    {
+      "from_workspace": "default",
+      "from_project":   "ai-memory",
+      "from_path":      "decisions/0014-storage.md",
+      "to_workspace":   "default",
+      "to_project":     "infra",
+      "to_path":        "runbooks/sqlite-wal.md"
+    }
+  ]
+}
+```
+
+Global today (no workspace / project filter); narrower query params
+are a follow-up.
+
 ## 5. Limits and pagination
 
 - All `limit` query params clamp to `1..=100`.
 - `POST /api/v1/search`: at most **25 scopes** per request.
 - HTTP body cap: **10 MB** (shared with the MCP body limit; you won't
   hit this for normal API traffic).
-- **No `Cache-Control` / ETag headers yet.** A polling SPA hits the DB
-  on every request. If your UI polls aggressively, consider client-side
-  debouncing; server-side caching is a planned iteration.
+- **Cache-Control + ETag.** Idempotent read endpoints (workspaces,
+  projects, pages list, page read, recent, briefing, overview) send
+  `Cache-Control: private, max-age=N` with an N tuned per endpoint
+  and a SHA-256 `ETag` derived from the response body. Browsers that
+  echo back `If-None-Match` receive a `304 Not Modified` with no body.
+  Search responses are not cacheable (request body affects the result).
 
 ## 6. Custom UI hosting and base paths
 
@@ -384,6 +415,22 @@ With `--base-path /wiki`, the API lives at `/wiki/api/v1`, MCP at
 `/wiki/mcp`, hooks at `/wiki/hook`, admin routes at `/wiki/admin/*`, and the
 default web UI at `/wiki/web`. Set `--web-slug /` to mount the web UI or custom
 SPA at the base root (`/wiki`) instead of `/wiki/web`.
+
+**Base-path safety rules.** Both `--base-path` and `--web-slug` go
+through the same normaliser. Segments must be RFC 3986 unreserved
+characters (`[A-Za-z0-9-._~]`). Three things collapse the prefix to
+`""` (root mount) with a startup `WARN` so you can see the
+downgrade in the log:
+
+- `.` or `..` segments. Their characters are unreserved on their own,
+  but at the segment boundary they mean "current" and "parent" — one
+  typo and your prefix is a traversal vector.
+- Any character outside the unreserved set (spaces, `<`, `"`, etc.).
+- Empty / whitespace-only input.
+
+The trailing-slash redirect at `{base_path}{web_slug}/` →
+`{base_path}{web_slug}` keeps the query string. Fragments are
+client-side and never reach the server.
 
 When `--web-ui-dir` is **absent**, the built-in server-side `/web`
 browser is the default (read-only HTML rendering, FTS5 search,
@@ -459,15 +506,27 @@ Read these:
 | Auth + middleware layering | `crates/ai-memory-cli/src/commands/serve.rs` (`mount_web_router`, `apply_http_layers`) |
 | Custom-UI dir validation | `crates/ai-memory-cli/src/commands/serve.rs` (`validate_web_ui_args`) |
 
-## 9. Known gaps (planned iterations, not blockers)
+## 9. CORS
 
-- **`Cache-Control` + ETags** on idempotent reads. Right now every
-  `/api/v1/overview` poll hits the DB. Adding `Cache-Control: private,
-  max-age=N` + ETags is a quick win once polling patterns are observed.
-- **CORS.** No `CorsLayer` is mounted, so the API is reachable only
-  same-origin or via a reverse proxy that adds the headers. A future
-  `--cors-allow-origin` flag would let separately-hosted frontends talk
-  to a remote `ai-memory` server directly.
+`/api/v1` accepts cross-origin requests when the operator configures
+the allow-list. The CORS layer is scoped to that router only — `/mcp`,
+`/hook`, `/admin/*`, and `/web` stay same-origin.
+
+Configure via either `--cors-allow-origin <origin>` (repeatable) on
+the `serve` subcommand or `AI_MEMORY_CORS_ALLOW_ORIGINS=<csv>` in the
+environment. The list is validated at startup:
+
+- Each entry must be a fully-qualified `scheme://host[:port]` URL.
+- No trailing slash, no path, no query, no wildcard (`*`).
+- Mixed `http://` + `https://` is fine; pick what your SPA serves.
+
+Invalid origins fail startup with a clear error rather than silently
+accepting wildcard. The layer allows `GET / POST / OPTIONS`,
+`Authorization` + `Content-Type` headers, and credentials, with a
+10-minute preflight cache.
+
+## 10. Known gaps (planned iterations, not blockers)
+
 - **Write surface.** Browsers can't mutate today (notes, consolidate,
   lint, purge — all live under `/admin/*` for the CLI or under MCP
   tools for agents). A thin authenticated write surface ("edit this

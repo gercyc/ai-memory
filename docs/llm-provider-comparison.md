@@ -164,11 +164,32 @@ support to enforce - will drift to whatever feels natural.
 
 Compounding this at the time of the run: openai-compat providers
 (Ollama, OpenRouter passthrough) were using ai-memory's tolerant
-parser path, so the schema was descriptive, not coercive. ai-memory
-now has opt-in `AI_MEMORY_LLM_COMPAT_STRICT=true` for compatible
-engines that honour OpenAI-style `response_format=json_schema`, but
-the prompt still has to do the load-bearing work when strict mode is
-off or the strict raw call falls back.
+parser path, so the schema was descriptive, not coercive. The
+provider opt-in for coercive structured output is documented below.
+
+#### Opting into strict structured output for openai-compat
+
+Set `AI_MEMORY_LLM_COMPAT_STRICT=true` to make `openai-compat` send
+`response_format={ type: "json_schema", strict: true }` first. On a
+parse-shape failure (the upstream returned a response but it wasn't a
+valid JSON object), ai-memory falls back to the tolerant parser the
+default mode uses; on HTTP 4xx / 5xx / auth / transport errors the
+strict call propagates without retry (a tolerant retry would just hit
+the same wall and double cost — see `is_parse_shape_error` in
+`crates/ai-memory-llm/src/openai_compat.rs`).
+
+**Cost.** Strict mode is one HTTP call when the upstream honours
+`response_format`. When it doesn't, you pay a second call for the
+tolerant fallback. Pick by engine:
+
+| Engine class | Setting |
+|---|---|
+| Modern Ollama / vLLM / LM Studio honouring `response_format=json_schema` | `AI_MEMORY_LLM_COMPAT_STRICT=true` (one call, schema-constrained) |
+| Reasoning models with `<think>…</think>` inside `content` (DeepSeek-R1, Qwen3-Thinking, MiniMax M2) | Leave OFF. Strict-then-fallback burns a call per consolidation; the tolerant path already strips `<think>` before parsing |
+| Older engines / proxies that ignore `response_format` | Leave OFF. Strict adds latency and recovers nothing |
+
+The prompt still has to do the load-bearing work when strict mode is
+off or the strict call falls back.
 
 ## The fix
 
@@ -682,8 +703,10 @@ Re-run this harness when any of the following changes:
   drops for Ollama)
 - A new fixture is added to `evals/fixtures/`
 - The home server hardware changes
-- An OpenAI / Anthropic / Voyage strict-JSON-schema feature
-  becomes available through OpenRouter
+- A new local engine ships first-class
+  `response_format=json_schema` support, making
+  `AI_MEMORY_LLM_COMPAT_STRICT=true` worth re-benchmarking against
+  the tolerant-parser baseline
 
 ## How to reproduce
 

@@ -117,6 +117,7 @@ deployment guide, including:
 - When to add TLS and when to skip it (the loopback + stdio cases honestly don't need it).
 - Copy-paste docker compose templates in [`docker/compose.tls.caddy.yml`](../docker/compose.tls.caddy.yml) and [`docker/compose.tls.cloudflared.yml`](../docker/compose.tls.cloudflared.yml).
 - Per-OS trust-store install for the internal-CA path (the load-bearing manual step).
+- [Hosting under a subpath](https-via-proxy.md#hosting-under-a-subpath) via `--base-path` / `AI_MEMORY_BASE_PATH` when ai-memory shares a hostname with other apps.
 - The explicit "what can go wrong" sections so you don't ship security theatre by accident.
 
 For the single-user-on-loopback Quick Start, the bearer token alone

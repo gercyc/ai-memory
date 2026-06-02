@@ -159,6 +159,16 @@ The built-in browser is then at `https://memory.example.com/wiki/web`; add
 `AI_MEMORY_WEB_SLUG=/` if you want the browser or custom `--web-ui-dir` SPA at
 `https://memory.example.com/wiki` itself.
 
+**Safety rules on both flags.** `AI_MEMORY_BASE_PATH` and
+`AI_MEMORY_WEB_SLUG` go through the same normaliser. Segments must be
+RFC 3986 unreserved characters (`[A-Za-z0-9-._~]`). Dot-segments
+(`.` / `..`) are rejected — they mean "current" and "parent" at a
+segment boundary, so accepting them would let a typo turn the prefix
+into traversal. Anything outside the unreserved set falls back to a
+root mount, and the startup log says why. The trailing-slash redirect
+at `{base_path}{web_slug}/` keeps the query string on its way to the
+canonical form.
+
 ### MCP client config (Claude Code shown — others follow the same shape)
 
 ```bash

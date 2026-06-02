@@ -58,9 +58,18 @@ Webhooks fire on these `op` values today (extensible enum):
   reject the project move.
 
 `delete` / `purge_project` / `move_project` are notifications — there is no
-body to mutate; a `Reject`-policy webhook still aborts the operation. Each webhook opts
-into the ops it cares about via `events`; the chain checks the op against
-`WebhookConfig::events` before dispatching.
+body to mutate; a `Reject`-policy webhook still aborts the operation
+(admission fires BEFORE the SQL destruction in both the `/admin/purge-project`
+and `/admin/move-project` copy-purge paths, so reject leaves the source
+intact). Each webhook opts into the ops it cares about via `events`; the
+chain checks the op against `WebhookConfig::events` before dispatching.
+
+A copy-purge `/admin/move-project` fires **two** webhook events from
+one request: one or more `write_page` notifications as the pages copy
+into the destination, then one terminal `purge_project` notification
+when the source is torn down. The `purge_project` event carries
+`partial_failure: true` if the SQL purge committed but the on-disk
+dir removal failed afterwards.
 
 ### What does NOT fire the chain (by design)
 
@@ -107,7 +116,13 @@ X-Memory-Op: write_page | consolidate | delete | purge_project | move_project
       "client": "72836f52-...",              // DCR client UUID
       "session_id": "019e6d-..."
     },
-    "op": "write_page"                       // write_page | consolidate | delete | purge_project | move_project
+    "op": "write_page",                      // write_page | consolidate | delete | purge_project | move_project
+    "partial_failure": true                  // purge_project only, and ONLY when set
+                                             //   (skipped on the wire when false).
+                                             //   true → the DB rows were purged but
+                                             //   `remove_project_dir` failed afterwards;
+                                             //   a filesystem-tracking mirror (git push)
+                                             //   should refuse to drop its own copy.
   }
 }
 ```
