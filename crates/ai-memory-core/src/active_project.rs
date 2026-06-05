@@ -28,17 +28,22 @@
 //! - `PerSession` keys by `session_id` — isolates concurrent agent runs of
 //!   the same operator (one person with several Claude Code / Codex windows
 //!   in different repos at once).
-//! - `PerActor` keys by `(user, session_id)` — isolates across operators as
-//!   well as across sessions, for corporate installs with multiple authed
-//!   users sharing one engine. Pairs with multi-user mode (rung 2): `user`
-//!   comes from the `users` row that owns the bearer token.
+//! - `PerActor` keys by `(user, session_id)` when both coordinates are present
+//!   and also keeps a user-only fallback slot. That isolates across operators
+//!   even when a client cannot forward a per-session key, while preserving
+//!   per-session isolation for clients/bridges that do forward one. Pairs with
+//!   multi-user mode (rung 2): `user` comes from the `users` row that owns the
+//!   bearer token.
 //!
 //! When the caller has no actor identity at all (anonymous request without a
 //! session, or a code path the migration has not threaded yet), every mode
-//! falls back to the single slot — never a silent error, never a wrong-actor
-//! lookup. The single slot is also what the historical `set` / `get` /
-//! `clear` API touches, so existing callers compile unchanged and admin ops
-//! like `move-project` still invalidate the pointer correctly.
+//! falls back to the single slot for backward compatibility. That is a legacy
+//! convenience, not isolation; session-aware clients should forward a session
+//! key, and shared authenticated installs should use `PerActor` so user-scoped
+//! fallback applies before the global slot. The single slot is also what the
+//! historical `set` / `get` / `clear` API touches, so existing callers compile
+//! unchanged and admin ops like `move-project` still invalidate the pointer
+//! correctly.
 //!
 //! ## Memory bound
 //!
@@ -242,6 +247,11 @@ impl ActiveProject {
     ///   *and* the single slot is updated as well, so callers that have no
     ///   actor identity (anonymous probes, legacy code paths) still see the
     ///   latest project rather than an empty pointer.
+    /// - In `PerActor`, a user-only fallback entry is also set when `user` is
+    ///   present. Real MCP clients often cannot attach the hook payload's
+    ///   session id to every tool call; the user-only slot still prevents an
+    ///   authenticated Alice request from falling through to Bob's latest
+    ///   project in the global slot.
     pub fn set_for(&self, actor: &ActorKey, workspace_id: WorkspaceId, project_id: ProjectId) {
         self.write_single(workspace_id, project_id);
         if self.mode == ActiveProjectMode::Single || actor.is_empty() {
@@ -252,6 +262,20 @@ impl ActiveProject {
             return;
         }
         let mut guard = self.per_actor.write().unwrap_or_else(|e| e.into_inner());
+        if self.mode == ActiveProjectMode::PerActor
+            && actor.user.is_some()
+            && actor.session_id.is_some()
+        {
+            guard.insert(
+                ActorKey {
+                    user: actor.user.clone(),
+                    session_id: None,
+                },
+                workspace_id,
+                project_id,
+                Instant::now(),
+            );
+        }
         guard.insert(scoped, workspace_id, project_id, Instant::now());
     }
 
@@ -268,6 +292,18 @@ impl ActiveProject {
                 let mut guard = self.per_actor.write().unwrap_or_else(|e| e.into_inner());
                 if let Some(found) = guard.get(&scoped, Instant::now()) {
                     return Some(found);
+                }
+                if self.mode == ActiveProjectMode::PerActor
+                    && scoped.user.is_some()
+                    && scoped.session_id.is_some()
+                {
+                    let user_only = ActorKey {
+                        user: scoped.user.clone(),
+                        session_id: None,
+                    };
+                    if let Some(found) = guard.get(&user_only, Instant::now()) {
+                        return Some(found);
+                    }
                 }
             }
         }
@@ -493,6 +529,48 @@ mod tests {
         assert_eq!(ap.get_for(&alice_a), Some((ws, p1)));
         assert_eq!(ap.get_for(&alice_b), Some((ws, p2)));
         assert_eq!(ap.get_for(&bob_a), Some((ws, p3)));
+    }
+
+    #[test]
+    fn per_actor_user_only_lookup_stays_with_that_user() {
+        let ap = ActiveProject::with_mode(ActiveProjectMode::PerActor);
+        let alice_a = key_actor("alice", "sA");
+        let bob_a = key_actor("bob", "sA");
+        let ws = WorkspaceId::new();
+        let p_alice = ProjectId::new();
+        let p_bob = ProjectId::new();
+        ap.set_for(&alice_a, ws, p_alice);
+        ap.set_for(&bob_a, ws, p_bob);
+
+        assert_eq!(
+            ap.get_for(&ActorKey {
+                user: Some("alice".into()),
+                session_id: None,
+            }),
+            Some((ws, p_alice)),
+            "missing session id must not fall through to Bob's global slot"
+        );
+    }
+
+    #[test]
+    fn per_actor_unknown_session_falls_back_to_user_slot() {
+        let ap = ActiveProject::with_mode(ActiveProjectMode::PerActor);
+        let alice_a = key_actor("alice", "hook-session");
+        let bob_a = key_actor("bob", "hook-session");
+        let ws = WorkspaceId::new();
+        let p_alice = ProjectId::new();
+        let p_bob = ProjectId::new();
+        ap.set_for(&alice_a, ws, p_alice);
+        ap.set_for(&bob_a, ws, p_bob);
+
+        assert_eq!(
+            ap.get_for(&ActorKey {
+                user: Some("alice".into()),
+                session_id: Some("different-mcp-session".into()),
+            }),
+            Some((ws, p_alice)),
+            "mismatched session id should degrade to Alice's latest slot, not the global slot"
+        );
     }
 
     #[test]

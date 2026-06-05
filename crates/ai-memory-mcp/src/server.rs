@@ -546,10 +546,11 @@ impl AiMemoryServer {
     ///   security-critical.
     /// - `session_id` comes from the same `ActorContext` when the auth
     ///   middleware filled it; if not, falls back to the rung-4
-    ///   `X-Memory-Actor-Session-Id` request header. The session id is
-    ///   just a cache key for the active-project map — getting it wrong
-    ///   only routes the lookup to a different (or absent) slot, with no
-    ///   auth-bypass risk, so trusting the header here is safe.
+    ///   `X-Memory-Actor-Session-Id` request header, then to the standard
+    ///   MCP `Mcp-Session-Id` header. The session id is just a cache key
+    ///   for the active-project map — getting it wrong only routes the
+    ///   lookup to a different (or absent) slot, with no auth-bypass risk,
+    ///   so trusting the header here is safe.
     ///
     /// Returns the empty [`ActorKey`] when neither source has anything to
     /// offer; that's the graceful-degradation signal for callers to fall
@@ -562,15 +563,19 @@ impl AiMemoryServer {
         };
         let ctx = parts.extensions.get::<ai_memory_core::ActorContext>();
         let user = ctx.and_then(|c| c.user.clone());
-        let session_id = ctx.and_then(|c| c.session_id.clone()).or_else(|| {
+        let header_session = |name: &str| {
             parts
                 .headers
-                .get("x-memory-actor-session-id")
+                .get(name)
                 .and_then(|v| v.to_str().ok())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
-        });
+        };
+        let session_id = ctx
+            .and_then(|c| c.session_id.clone())
+            .or_else(|| header_session("x-memory-actor-session-id"))
+            .or_else(|| header_session("mcp-session-id"));
         ai_memory_core::ActorKey { user, session_id }
     }
 
@@ -1920,6 +1925,57 @@ mod tests {
 
         let server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj);
         (tmp, store, server, ws, proj)
+    }
+
+    #[test]
+    fn actor_key_uses_memory_session_header() {
+        let mut parts = test_parts_default();
+        parts.headers.insert(
+            "x-memory-actor-session-id",
+            axum::http::HeaderValue::from_static("hook-session"),
+        );
+
+        let actor = AiMemoryServer::actor_key_from_parts(Some(&parts));
+
+        assert_eq!(actor.user, None);
+        assert_eq!(actor.session_id.as_deref(), Some("hook-session"));
+    }
+
+    #[test]
+    fn actor_key_accepts_standard_mcp_session_header() {
+        let mut parts = test_parts_default();
+        parts.headers.insert(
+            "mcp-session-id",
+            axum::http::HeaderValue::from_static("mcp-session"),
+        );
+
+        let actor = AiMemoryServer::actor_key_from_parts(Some(&parts));
+
+        assert_eq!(actor.user, None);
+        assert_eq!(actor.session_id.as_deref(), Some("mcp-session"));
+    }
+
+    #[test]
+    fn actor_key_prefers_middleware_context_over_headers() {
+        let mut parts = test_parts_default();
+        parts.headers.insert(
+            "x-memory-actor-session-id",
+            axum::http::HeaderValue::from_static("header-session"),
+        );
+        parts.headers.insert(
+            "mcp-session-id",
+            axum::http::HeaderValue::from_static("mcp-session"),
+        );
+        parts.extensions.insert(ai_memory_core::ActorContext {
+            user: Some("alice".into()),
+            session_id: Some("context-session".into()),
+            ..ai_memory_core::ActorContext::default()
+        });
+
+        let actor = AiMemoryServer::actor_key_from_parts(Some(&parts));
+
+        assert_eq!(actor.user.as_deref(), Some("alice"));
+        assert_eq!(actor.session_id.as_deref(), Some("context-session"));
     }
 
     #[tokio::test]

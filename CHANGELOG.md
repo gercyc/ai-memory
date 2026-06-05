@@ -14,8 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointer by `session_id` to isolate concurrent agent runs of the same
   operator; opt-in `per_actor` keys by `(user, session_id)` to isolate
   across operators as well, pairing with multi-user mode where `user`
-  comes from the `users` row that owns the bearer token. Per-key entries
-  carry an insertion timestamp and are TTL-evicted (default 1 hour) and
+  comes from the `users` row that owns the bearer token. `per_actor`
+  also keeps a user-only fallback slot so authenticated MCP requests
+  from clients that cannot forward a session id do not inherit another
+  user's latest project; same-user session isolation still requires a
+  client/bridge that sends `X-Memory-Actor-Session-Id` or
+  `Mcp-Session-Id` on MCP tool calls. Per-key entries carry an insertion
+  timestamp and are TTL-evicted (default 1 hour) and
   capped (default 4096) so adversarial / runaway clients cannot grow the
   map without bound. Both opt-in modes still publish to the single slot
   in parallel, so any caller without actor context falls back gracefully
