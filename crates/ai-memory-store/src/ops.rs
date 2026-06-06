@@ -2332,4 +2332,53 @@ mod tests {
              proves nothing"
         );
     }
+
+    /// Regression for the live-found hyphen bug: searching `ui-refresh`
+    /// returned nothing in prod even though
+    /// `follow-ups/ui-refresh-scroll-restoration.md` exists. The first fix
+    /// quoted it as `"ui-refresh"`, which **does not error but also does not
+    /// match** the indexed `ui refresh` — only `"ui refresh"` (sub-token
+    /// phrase) does. The string-level test can't see this; this drives real
+    /// FTS5 against the real `path_search` index. It would have caught the
+    /// bug the dotted-only fix left behind.
+    #[test]
+    fn hyphenated_filename_search_matches_indexed_path() {
+        let (_tmp, mut conn, ws, proj) = fresh_db();
+        upsert_page(
+            &mut conn,
+            &page(
+                ws,
+                proj,
+                "follow-ups/ui-refresh-scroll-restoration.md",
+                "body text",
+            ),
+        )
+        .unwrap();
+
+        let hits = fts_match_paths(&conn, "ui-refresh")
+            .expect("hyphenated search must not raise an FTS5 syntax error");
+        assert!(
+            hits.iter()
+                .any(|p| p == "follow-ups/ui-refresh-scroll-restoration.md"),
+            "search for `ui-refresh` should match the indexed path; got {hits:?}"
+        );
+
+        // Pin the exact FTS5 quirk the fix works around: the keeps-the-hyphen
+        // phrase matches nothing, the spaces phrase matches. If this ever
+        // flips, the sub-token quoting is no longer load-bearing.
+        let count = |q: &str| -> i64 {
+            conn.query_row(
+                "SELECT count(*) FROM pages_fts WHERE pages_fts MATCH ?1",
+                params![q],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            count("\"ui-refresh\""),
+            0,
+            "kept-hyphen phrase must not match"
+        );
+        assert_eq!(count("\"ui refresh\""), 1, "sub-token phrase must match");
+    }
 }
