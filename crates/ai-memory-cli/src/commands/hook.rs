@@ -21,51 +21,82 @@ use crate::cli::HookArgs;
 use super::hook_capture::{build_client, extract_cwd, get_handoff, marker_query_suffix};
 use super::hook_spool;
 
-// All drain/handoff timings default to the values below and can be overridden
-// (in milliseconds) by the matching env var, for very high-latency or
-// large-backlog instances. Two kinds: per-request timeouts cap each individual
-// POST / handoff GET; session-boundary budgets cap how long a boundary spends
-// draining (so a boundary never hangs unbounded).
-const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 3000;
-const DEFAULT_HANDOFF_TIMEOUT_MS: u64 = 3000;
-const DEFAULT_START_BUDGET_MS: u64 = 3000;
-const DEFAULT_END_BUDGET_MS: u64 = 10000;
+// All drain/handoff timings default to the current short values and can be
+// overridden by whole-minute env vars for very high-latency or large-backlog
+// instances. Two kinds: per-request timeouts cap each individual POST / handoff
+// GET; session-boundary budgets cap how long a boundary spends draining (so a
+// boundary never hangs unbounded).
+const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_HANDOFF_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_START_BUDGET: Duration = Duration::from_secs(3);
+const DEFAULT_END_BUDGET: Duration = Duration::from_secs(10);
+const MAX_OVERRIDE_MINUTES: u64 = 60;
 
-/// Per-event POST timeout during a drain. Env: `AI_MEMORY_HOOK_DRAIN_TIMEOUT_MS`.
+const DRAIN_TIMEOUT_ENV: &str = "AI_MEMORY_HOOK_DRAIN_TIMEOUT_MINUTES";
+const HANDOFF_TIMEOUT_ENV: &str = "AI_MEMORY_HOOK_HANDOFF_TIMEOUT_MINUTES";
+const START_BUDGET_ENV: &str = "AI_MEMORY_HOOK_START_BUDGET_MINUTES";
+const END_BUDGET_ENV: &str = "AI_MEMORY_HOOK_END_BUDGET_MINUTES";
+
+/// Per-event POST timeout during a drain. Env: `AI_MEMORY_HOOK_DRAIN_TIMEOUT_MINUTES`.
 fn drain_event_timeout() -> Duration {
-    env_ms("AI_MEMORY_HOOK_DRAIN_TIMEOUT_MS", DEFAULT_DRAIN_TIMEOUT_MS)
+    drain_event_timeout_from(env_lookup)
 }
-/// Synchronous handoff GET timeout. Env: `AI_MEMORY_HOOK_HANDOFF_TIMEOUT_MS`.
+/// Synchronous handoff GET timeout. Env: `AI_MEMORY_HOOK_HANDOFF_TIMEOUT_MINUTES`.
 fn handoff_timeout() -> Duration {
-    env_ms(
-        "AI_MEMORY_HOOK_HANDOFF_TIMEOUT_MS",
-        DEFAULT_HANDOFF_TIMEOUT_MS,
-    )
+    handoff_timeout_from(env_lookup)
 }
 /// Total budget for the `session-start` cleanup drain (kept tight so session
 /// start stays snappy even when the server is down — leftovers wait). Env:
-/// `AI_MEMORY_HOOK_START_BUDGET_MS`.
+/// `AI_MEMORY_HOOK_START_BUDGET_MINUTES`.
 fn start_drain_budget() -> Duration {
-    env_ms("AI_MEMORY_HOOK_START_BUDGET_MS", DEFAULT_START_BUDGET_MS)
+    start_drain_budget_from(env_lookup)
 }
 /// Total budget for the `session-end` flush (the main delivery point; a session
-/// boundary tolerates more). Env: `AI_MEMORY_HOOK_END_BUDGET_MS`.
+/// boundary tolerates more). Env: `AI_MEMORY_HOOK_END_BUDGET_MINUTES`.
 fn end_drain_budget() -> Duration {
-    env_ms("AI_MEMORY_HOOK_END_BUDGET_MS", DEFAULT_END_BUDGET_MS)
+    end_drain_budget_from(env_lookup)
 }
 
-/// Read a positive-integer millisecond override from `name`, falling back to
-/// `default_ms` for missing / empty / non-numeric / zero values.
-fn env_ms(name: &str, default_ms: u64) -> Duration {
-    parse_ms(std::env::var(name).ok(), default_ms)
+fn drain_event_timeout_from(lookup: impl FnMut(&str) -> Option<String>) -> Duration {
+    env_minutes(DRAIN_TIMEOUT_ENV, DEFAULT_DRAIN_TIMEOUT, lookup)
 }
 
-fn parse_ms(raw: Option<String>, default_ms: u64) -> Duration {
-    let ms = raw
+fn handoff_timeout_from(lookup: impl FnMut(&str) -> Option<String>) -> Duration {
+    env_minutes(HANDOFF_TIMEOUT_ENV, DEFAULT_HANDOFF_TIMEOUT, lookup)
+}
+
+fn start_drain_budget_from(lookup: impl FnMut(&str) -> Option<String>) -> Duration {
+    env_minutes(START_BUDGET_ENV, DEFAULT_START_BUDGET, lookup)
+}
+
+fn end_drain_budget_from(lookup: impl FnMut(&str) -> Option<String>) -> Duration {
+    env_minutes(END_BUDGET_ENV, DEFAULT_END_BUDGET, lookup)
+}
+
+fn env_lookup(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+/// Read a positive-integer minute override from `name`, falling back to the
+/// built-in short default for missing / empty / non-numeric / zero values. Clamp
+/// large values so a typo cannot block a hook boundary for hours or days.
+fn env_minutes(
+    name: &str,
+    default: Duration,
+    mut lookup: impl FnMut(&str) -> Option<String>,
+) -> Duration {
+    parse_minutes(lookup(name), default)
+}
+
+fn parse_minutes(raw: Option<String>, default: Duration) -> Duration {
+    let minutes = raw
         .and_then(|s| s.trim().parse::<u64>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(default_ms);
-    Duration::from_millis(ms)
+        .map(|n| n.min(MAX_OVERRIDE_MINUTES));
+    match minutes {
+        Some(n) => Duration::from_secs(n * 60),
+        None => default,
+    }
 }
 
 /// Run a single hook end-to-end. Always returns Ok and always writes a JSON
@@ -153,32 +184,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_ms_falls_back_on_invalid() {
-        assert_eq!(parse_ms(None, 3000), Duration::from_millis(3000));
+    fn parse_minutes_falls_back_on_invalid() {
         assert_eq!(
-            parse_ms(Some(String::new()), 3000),
-            Duration::from_millis(3000)
+            parse_minutes(None, DEFAULT_DRAIN_TIMEOUT),
+            DEFAULT_DRAIN_TIMEOUT
         );
         assert_eq!(
-            parse_ms(Some("abc".into()), 3000),
-            Duration::from_millis(3000)
+            parse_minutes(Some(String::new()), DEFAULT_DRAIN_TIMEOUT),
+            DEFAULT_DRAIN_TIMEOUT
         );
-        // Zero is rejected (a 0ms timeout would drop every request).
         assert_eq!(
-            parse_ms(Some("0".into()), 3000),
-            Duration::from_millis(3000)
+            parse_minutes(Some("abc".into()), DEFAULT_DRAIN_TIMEOUT),
+            DEFAULT_DRAIN_TIMEOUT
+        );
+        // Zero is rejected (a 0-minute timeout would drop every request).
+        assert_eq!(
+            parse_minutes(Some("0".into()), DEFAULT_DRAIN_TIMEOUT),
+            DEFAULT_DRAIN_TIMEOUT
         );
     }
 
     #[test]
-    fn parse_ms_honours_valid_override() {
+    fn parse_minutes_honours_valid_override() {
         assert_eq!(
-            parse_ms(Some("8000".into()), 3000),
-            Duration::from_millis(8000)
+            parse_minutes(Some("2".into()), DEFAULT_DRAIN_TIMEOUT),
+            Duration::from_secs(120)
         );
         assert_eq!(
-            parse_ms(Some("  6000 ".into()), 3000),
-            Duration::from_millis(6000)
+            parse_minutes(Some("  3 ".into()), DEFAULT_DRAIN_TIMEOUT),
+            Duration::from_secs(180)
+        );
+    }
+
+    #[test]
+    fn parse_minutes_clamps_large_values() {
+        assert_eq!(
+            parse_minutes(Some("999".into()), DEFAULT_DRAIN_TIMEOUT),
+            Duration::from_secs(MAX_OVERRIDE_MINUTES * 60)
+        );
+    }
+
+    #[test]
+    fn timing_accessors_read_the_expected_env_vars() {
+        fn one_minute_for(expected_name: &'static str) -> impl FnMut(&str) -> Option<String> {
+            move |actual_name| {
+                assert_eq!(actual_name, expected_name);
+                Some("1".to_string())
+            }
+        }
+
+        assert_eq!(
+            drain_event_timeout_from(one_minute_for(DRAIN_TIMEOUT_ENV)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            handoff_timeout_from(one_minute_for(HANDOFF_TIMEOUT_ENV)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            start_drain_budget_from(one_minute_for(START_BUDGET_ENV)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            end_drain_budget_from(one_minute_for(END_BUDGET_ENV)),
+            Duration::from_secs(60)
         );
     }
 }
