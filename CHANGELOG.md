@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.0.3] - 2026-06-13
 ### Added
 - Native macOS release tarballs (`ai-memory-macos-aarch64.tar.gz` for
   Apple Silicon and `ai-memory-macos-x86_64.tar.gz` for Intel) are now
@@ -968,7 +970,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.0.3
 [1.0.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.0.2
 [1.0.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.0.1
 [1.0.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.0.0
