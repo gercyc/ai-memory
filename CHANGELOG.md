@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-06-15
+
 ### Changed
 - `ai-memory auto-improve --session-id <uuid>` and `POST /admin/auto-improve`
   now record validated proposals in the pending-writes audit trail and approve
@@ -1106,7 +1108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.0.9...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.0.10...HEAD
+[1.0.10]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.0.10
 [1.0.9]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.0.9
 [1.0.8]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.0.8
 [1.0.7]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.0.7
