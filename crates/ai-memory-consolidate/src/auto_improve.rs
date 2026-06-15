@@ -715,6 +715,8 @@ fn validate_response(
 }
 
 fn normalize_proposal(proposal: &mut AutoImproveProposal, warnings: &mut Vec<String>) {
+    normalize_kind(proposal, warnings);
+
     if proposal.body_markdown.trim_start().starts_with("# ") {
         return;
     }
@@ -728,6 +730,59 @@ fn normalize_proposal(proposal: &mut AutoImproveProposal, warnings: &mut Vec<Str
         "proposal {} body lacked an H1; prepended title as H1 before validation",
         proposal.path
     ));
+}
+
+fn normalize_kind(proposal: &mut AutoImproveProposal, warnings: &mut Vec<String>) {
+    let original = proposal.kind.clone();
+    let alias = canonical_kind_alias(&original);
+    if !alias.is_empty() && kind_matches_path(&alias, &proposal.path) {
+        proposal.kind = alias;
+    } else if original.trim().is_empty()
+        && let Some(kind) = canonical_kind_for_path(&proposal.path)
+    {
+        proposal.kind = kind.into();
+    }
+
+    if proposal.kind != original {
+        warnings.push(format!(
+            "proposal {} kind normalized from {:?} to {:?}",
+            proposal.path, original, proposal.kind
+        ));
+    }
+}
+
+fn canonical_kind_alias(kind: &str) -> String {
+    match kind.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "gotcha" | "gotchas" | "pitfall" | "pitfalls" => "gotcha".into(),
+        "decision" | "decisions" | "design_decision" | "architecture_decision" => "decision".into(),
+        "concept" | "concepts" | "architecture" | "domain_knowledge" => "concept".into(),
+        "procedure" | "procedures" | "process" | "workflow" | "workflows" => "procedure".into(),
+        "rule" | "rules" | "policy" | "policies" => "rule".into(),
+        "slot" | "slots" => "slot".into(),
+        "fact" | "facts" => "fact".into(),
+        "note" | "notes" => "note".into(),
+        _ => String::new(),
+    }
+}
+
+fn canonical_kind_for_path(path: &str) -> Option<&'static str> {
+    if path.starts_with("gotchas/") {
+        Some("gotcha")
+    } else if path.starts_with("decisions/") {
+        Some("decision")
+    } else if path.starts_with("concepts/") {
+        Some("concept")
+    } else if path.starts_with("procedures/") {
+        Some("procedure")
+    } else if path.starts_with("_rules/") {
+        Some("rule")
+    } else if path.starts_with("_slots/") {
+        Some("slot")
+    } else if path.starts_with("notes/") {
+        Some("note")
+    } else {
+        None
+    }
 }
 
 fn validate_proposal(
@@ -1134,6 +1189,44 @@ mod tests {
         assert_eq!(accepted.len(), 1);
         assert!(rejected.is_empty());
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn validation_normalizes_plural_kind_aliases() {
+        let mut candidate = proposal("gotchas/workspace-scope.md", "gotchas", 0.91);
+        candidate.title = "Workspace Scope Gotcha".into();
+        candidate.body_markdown = "# Workspace Scope Gotcha\n\nBody".into();
+        let raw = AutoImproveLlmResponse {
+            summary: "ok".into(),
+            proposals: vec![candidate],
+            rejected_candidates: Vec::new(),
+        };
+
+        let (accepted, rejected, warnings) =
+            validate_response(raw, &cfg(), &ExistingPageIndex::default());
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].kind, "gotcha");
+        assert!(rejected.is_empty());
+        assert!(warnings.iter().any(|w| w.contains("kind normalized")));
+    }
+
+    #[test]
+    fn validation_derives_missing_kind_from_path() {
+        let mut candidate = proposal("procedures/release.md", "", 0.91);
+        candidate.title = "Release Procedure".into();
+        candidate.body_markdown = "# Release Procedure\n\nBody".into();
+        let raw = AutoImproveLlmResponse {
+            summary: "ok".into(),
+            proposals: vec![candidate],
+            rejected_candidates: Vec::new(),
+        };
+
+        let (accepted, rejected, warnings) =
+            validate_response(raw, &cfg(), &ExistingPageIndex::default());
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].kind, "procedure");
+        assert!(rejected.is_empty());
+        assert!(warnings.iter().any(|w| w.contains("kind normalized")));
     }
 
     #[test]
