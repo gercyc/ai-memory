@@ -114,7 +114,14 @@ impl<'de> Deserialize<'de> for AutoImproveEvidence {
         }
 
         match EvidenceInput::deserialize(deserializer)? {
-            EvidenceInput::Object { page, quote } => Ok(Self { page, quote }),
+            EvidenceInput::Object { page, quote } => Ok(Self {
+                page: if page.trim().is_empty() && !quote.trim().is_empty() {
+                    "unspecified".into()
+                } else {
+                    page
+                },
+                quote,
+            }),
             EvidenceInput::Quote(quote) => Ok(Self {
                 page: "unspecified".into(),
                 quote,
@@ -127,7 +134,7 @@ impl<'de> Deserialize<'de> for AutoImproveEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AutoImproveProposal {
     /// Currently only `create_or_update` is supported.
-    #[serde(default)]
+    #[serde(default = "default_operation")]
     pub operation: String,
     /// Relative wiki path that would be created or updated.
     #[serde(default)]
@@ -150,6 +157,10 @@ pub struct AutoImproveProposal {
     /// Markdown body without frontmatter.
     #[serde(default)]
     pub body_markdown: String,
+}
+
+fn default_operation() -> String {
+    "create_or_update".into()
 }
 
 /// A candidate the reviewer or validator rejected.
@@ -1041,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_proposal_missing_operation_is_rejected_not_parse_fatal() {
+    fn missing_operation_defaults_to_create_or_update() {
         let raw: AutoImproveLlmResponse = serde_json::from_value(serde_json::json!({
             "summary": "ok",
             "proposals": [{
@@ -1057,8 +1068,8 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(raw.proposals[0].operation, "");
-        assert_eq!(raw.proposals[0].evidence[0].page, "");
+        assert_eq!(raw.proposals[0].operation, "create_or_update");
+        assert_eq!(raw.proposals[0].evidence[0].page, "unspecified");
         assert_eq!(
             raw.proposals[0].evidence[0].quote,
             "run the full gate before release"
@@ -1066,9 +1077,32 @@ mod tests {
 
         let (accepted, rejected, warnings) =
             validate_response(raw, &cfg(), &ExistingPageIndex::default());
+        assert_eq!(accepted.len(), 1);
+        assert!(rejected.is_empty());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn malformed_proposal_missing_path_is_rejected_not_parse_fatal() {
+        let raw: AutoImproveLlmResponse = serde_json::from_value(serde_json::json!({
+            "summary": "ok",
+            "proposals": [{
+                "title": "Release Procedure",
+                "kind": "procedure",
+                "confidence": 0.91,
+                "rationale": "The session repeated a release workflow with verification.",
+                "evidence": ["run the full gate before release"],
+                "body_markdown": "# Release Procedure\n\nRun the full gate before release."
+            }],
+            "rejected_candidates": []
+        }))
+        .unwrap();
+
+        let (accepted, rejected, warnings) =
+            validate_response(raw, &cfg(), &ExistingPageIndex::default());
         assert!(accepted.is_empty());
         assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].reason, "unsupported_operation");
+        assert_eq!(rejected[0].reason, "invalid_path");
         assert!(warnings.is_empty());
     }
 
