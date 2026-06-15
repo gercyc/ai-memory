@@ -1,8 +1,9 @@
-//! Dry-run reviewer for optional auto-improvement proposals.
+//! Reviewer for optional auto-improvement proposals.
 //!
 //! This module is intentionally read-only. It inspects one completed session,
 //! asks the configured LLM for structured wiki edit proposals, validates those
-//! proposals, and returns a report. Staging and approval live in a later phase.
+//! proposals, and returns a report. CLI/admin code may stage the validated
+//! proposals after this read-only review returns.
 
 use std::collections::BTreeSet;
 
@@ -36,10 +37,10 @@ pub const DEFAULT_AUTO_IMPROVE_MAX_INPUT_TOKENS: usize = 24_000;
 pub const DEFAULT_AUTO_IMPROVE_MAX_PROPOSALS: usize = 5;
 /// Default synthetic actor name for autonomous proposal provenance.
 pub const DEFAULT_AUTO_IMPROVE_PROPOSAL_ACTOR: &str = "auto_improve";
-/// Default wiki-relative folder for future pending proposal markdown.
+/// Default wiki-relative folder for pending proposal sidecar markdown.
 pub const DEFAULT_AUTO_IMPROVE_PENDING_PATH: &str = "_pending/auto-improve";
 
-/// Configuration for one dry-run auto-improvement review.
+/// Configuration for one auto-improvement review.
 #[derive(Debug, Clone)]
 pub struct AutoImproveReviewConfig {
     /// Minimum observations before a session is worth reviewing.
@@ -52,16 +53,15 @@ pub struct AutoImproveReviewConfig {
     pub max_input_tokens: usize,
     /// Maximum validated proposals returned from one run.
     pub max_proposals_per_run: usize,
-    /// Whether raw fallback content may be considered. Reserved for prompt
-    /// visibility in this dry-run slice; hooks still provide raw observations.
+    /// Whether raw fallback content may be considered. Hooks still provide raw observations.
     pub include_raw_fallback: bool,
-    /// Synthetic actor name used for future proposal provenance.
+    /// Synthetic actor name used for staged proposal provenance.
     pub proposal_actor: String,
-    /// Wiki-relative pending proposal folder once staging ships.
+    /// Wiki-relative pending proposal sidecar folder.
     pub pending_path: String,
 }
 
-/// Errors raised by the dry-run reviewer.
+/// Errors raised by the reviewer.
 #[derive(Debug, Error)]
 pub enum AutoImproveError {
     /// Underlying store error.
@@ -188,11 +188,9 @@ pub struct AutoImproveLlmResponse {
     pub rejected_candidates: Vec<AutoImproveRejectedCandidate>,
 }
 
-/// Report returned by the dry-run reviewer.
+/// Report returned by the reviewer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoImproveReport {
-    /// Always true for this first implementation slice.
-    pub dry_run: bool,
     /// Reviewed session id.
     pub session_id: String,
     /// Number of observations read from the session.
@@ -207,13 +205,13 @@ pub struct AutoImproveReport {
     pub model: String,
     /// Configured confidence floor used by validation.
     pub min_confidence: f32,
-    /// Actor name reserved for future staged proposal provenance.
+    /// Actor name used for staged proposal provenance.
     pub proposal_actor: String,
-    /// Wiki-relative pending path reserved for future staged proposal markdown.
+    /// Wiki-relative pending proposal sidecar path.
     pub pending_path: String,
     /// Review summary.
     pub summary: String,
-    /// Validated proposals. No wiki writes have occurred.
+    /// Validated proposals. Target wiki pages have not been written.
     pub proposals: Vec<AutoImproveProposal>,
     /// Model and validator rejections.
     pub rejected_candidates: Vec<AutoImproveRejectedCandidate>,
@@ -221,7 +219,7 @@ pub struct AutoImproveReport {
     pub warnings: Vec<String>,
 }
 
-/// Run a dry-run auto-improvement review for one session.
+/// Run a read-only auto-improvement review for one session.
 ///
 /// # Errors
 /// Returns store, scope, or LLM errors. This function never writes wiki files or
@@ -245,7 +243,6 @@ pub async fn run_auto_improve_review(
     let duration = session_duration_secs(&observations);
     if let Some(rejection) = preflight_rejection(&observations, duration, &cfg) {
         return Ok(AutoImproveReport {
-            dry_run: true,
             session_id: session_id.to_string(),
             observations_considered: observations.len(),
             session_duration_secs: duration,
@@ -295,7 +292,6 @@ pub async fn run_auto_improve_review(
     warnings.extend(prompt_input.warnings);
 
     Ok(AutoImproveReport {
-        dry_run: true,
         session_id: session_id.to_string(),
         observations_considered: observations.len(),
         session_duration_secs: duration,
@@ -410,7 +406,7 @@ fn build_prompt_input(
          Minimum confidence: {}\n\
          Max proposals: {}\n\
          Include raw fallback: {}\n\
-         Pending path for future staging: {}\n\n\
+         Pending proposal sidecar path: {}\n\n\
          Existing project pages, for duplicate avoidance. Do not target these existing paths or titles; diff-based update proposals are a later phase:\n{recent}\n\n\
          Consolidated session page, primary source when present:\n{session_page_section}\n\n\
          Selected observations, sampled for scale and supporting evidence:\n{rendered_observations}\n\n\
@@ -871,7 +867,7 @@ fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(CHARS_PER_TOKEN)
 }
 
-const AUTO_IMPROVE_SYSTEM_PROMPT: &str = r#"You are ai-memory's dry-run auto-improvement reviewer.
+const AUTO_IMPROVE_SYSTEM_PROMPT: &str = r#"You are ai-memory's review-gated auto-improvement reviewer.
 
 Return structured JSON matching the schema. You are proposing wiki edits, not applying them.
 
@@ -1052,7 +1048,6 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(report.dry_run);
         assert_eq!(report.provider, "fake");
         assert_eq!(report.model, "fake-model");
         assert_eq!(report.proposals.len(), 1);

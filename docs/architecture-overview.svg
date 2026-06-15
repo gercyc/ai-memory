@@ -61,7 +61,7 @@
   <rect class="external" x="1050" y="130" width="290" height="118" />
   <text class="box-title" x="1075" y="164">Optional providers</text>
   <text class="box-text" x="1075" y="190">LLM consolidation and lint</text>
-  <text class="box-text" x="1075" y="211">dry-run auto-improvement</text>
+  <text class="box-text" x="1075" y="211">auto-improvement review/approval</text>
   <text class="box-text" x="1075" y="232">embedding vector backfill</text>
 
   <rect class="server" x="60" y="300" width="1280" height="390" />

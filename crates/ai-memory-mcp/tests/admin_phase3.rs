@@ -36,6 +36,7 @@ async fn make_state(tmp: &TempDir) -> (AdminState, Store) {
         reader: store.reader.clone(),
         wiki,
         llm: None,
+        auto_improve_require_approval: false,
         embedder: None,
         provider_health: ai_memory_llm::ProviderHealth::default(),
         decay_params: DecayParams::default(),

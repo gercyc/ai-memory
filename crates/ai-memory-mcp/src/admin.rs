@@ -4,7 +4,7 @@
 //! - `POST /admin/backup`         — snapshot db + wiki into a gzip tarball (binary response).
 //! - `POST /admin/bootstrap`      — ingest a pre-collected source bundle
 //!   into seed wiki pages via the configured LLM provider.
-//! - `POST /admin/auto-improve`   — dry-run durable wiki edit proposals for one session.
+//! - `POST /admin/auto-improve`   — review one session and stage proposals.
 //! - `POST /admin/curator`        — dry-run or stage a rule-based curator report.
 //! - `GET  /admin/status`         — lifetime counts + server data-dir info.
 //! - `GET  /admin/search?q=`      — FTS5 hits against the wiki index.
@@ -77,6 +77,10 @@ pub struct AdminState {
     pub wiki: Wiki,
     /// Optional LLM provider. When `None`, bootstrap returns 503.
     pub llm: Option<Arc<dyn LlmProvider>>,
+    /// If true, auto-improve leaves staged proposals pending for manual
+    /// approval; otherwise it approves them immediately through the normal wiki
+    /// write path.
+    pub auto_improve_require_approval: bool,
     /// Optional embedder. When `None`, `/admin/embed` returns 503.
     pub embedder: Option<Arc<dyn Embedder>>,
     /// Passive process-scoped health recorder for configured providers.
@@ -166,16 +170,6 @@ struct AutoImproveRequest {
     project: String,
     /// Completed session to review.
     session_id: SessionId,
-    /// Required for the first implementation slice. Live staging/apply is not
-    /// available until pending proposal storage ships.
-    #[serde(default)]
-    dry_run: bool,
-    /// Stage validated proposals into the pending-review queue.
-    #[serde(default)]
-    stage: bool,
-    /// Optional mode alias (`dry_run` or `stage`).
-    #[serde(default)]
-    mode: Option<String>,
     /// Minimum observations before the LLM review runs.
     #[serde(default = "default_auto_improve_min_observations")]
     min_observations: usize,
@@ -194,20 +188,42 @@ struct AutoImproveRequest {
     /// Whether future raw fallback details may be considered.
     #[serde(default)]
     include_raw_fallback: bool,
-    /// Synthetic actor reserved for future staged proposal provenance.
+    /// Synthetic actor used for staged proposal provenance.
     #[serde(default = "default_auto_improve_proposal_actor")]
     proposal_actor: String,
-    /// Pending proposal folder reserved for future staging.
+    /// Pending proposal sidecar folder.
     #[serde(default = "default_auto_improve_pending_path")]
     pending_path: String,
+    /// Removed compatibility field. Requests that still send it fail closed so
+    /// old preview callers cannot accidentally write pages.
+    #[serde(default)]
+    dry_run: Option<bool>,
+    /// Removed compatibility field.
+    #[serde(default)]
+    stage: Option<bool>,
+    /// Removed compatibility field.
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct AutoImproveStageResponse {
     run_id: String,
-    proposal_ids: Vec<String>,
-    sidecar_paths: Vec<String>,
-    report: ai_memory_consolidate::AutoImproveReport,
+    approval_required: bool,
+    approval_policy: String,
+    session_id: String,
+    summary: String,
+    warnings: Vec<String>,
+    rejected_candidates_count: usize,
+    proposals: Vec<AutoImproveProposalOutcome>,
+}
+
+#[derive(Debug, Serialize)]
+struct AutoImproveProposalOutcome {
+    id: String,
+    sidecar_path: String,
+    status: String,
+    page_id: Option<String>,
 }
 
 /// JSON request body for `POST /admin/curator`.
@@ -1000,39 +1016,25 @@ fn dry_run_outcome(
 }
 
 // ---------------------------------------------------------------------
-// auto-improve dry-run reviewer
+// auto-improve reviewer/stager
 // ---------------------------------------------------------------------
 
 async fn handle_auto_improve(
     State(state): State<Arc<AdminState>>,
+    actor_ext: Option<axum::Extension<ai_memory_core::ActorContext>>,
+    author_ext: Option<axum::Extension<ai_memory_core::UserId>>,
+    level_ext: Option<axum::Extension<ai_memory_core::AuthLevel>>,
+    headers: HeaderMap,
     Json(req): Json<AutoImproveRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let mode = req.mode.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let wants_stage = req.stage || matches!(mode, Some("stage"));
-    let wants_dry_run = req.dry_run || matches!(mode, Some("dry_run" | "dry-run"));
-    if wants_stage && wants_dry_run {
+    if req.dry_run.is_some() || req.stage.is_some() || req.mode.is_some() {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({ "error": "choose either dry_run or stage, not both" })),
+            Json(serde_json::json!({
+                "error": "auto-improve dry_run/stage/mode request fields were removed; set [auto_improve].require_approval = true for manual review"
+            })),
         ));
     }
-    if let Some(other) = mode
-        && !matches!(other, "stage" | "dry_run" | "dry-run")
-    {
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({ "error": format!("unknown auto-improve mode '{other}'") })),
-        ));
-    }
-    if !wants_dry_run && !wants_stage {
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(
-                serde_json::json!({ "error": "auto-improve requires dry_run=true or stage=true" }),
-            ),
-        ));
-    }
-
     let (ws, proj) = lookup_ws_proj_no_create(&state, &req.workspace, &req.project).await?;
     let Some(llm) = state.llm.as_ref().cloned() else {
         return Err((
@@ -1057,13 +1059,128 @@ async fn handle_auto_improve(
     let report = run_auto_improve_review(&state.reader, &*llm, ws, proj, req.session_id, cfg)
         .await
         .map_err(auto_improve_error_response)?;
-    if wants_dry_run {
-        return Ok((
-            StatusCode::OK,
-            Json(serde_json::to_value(&report).unwrap_or_else(|_| serde_json::json!({}))),
-        ));
-    }
+    let proposals = auto_improve_new_proposals(&state, ws, proj, &report).await?;
+    let staged =
+        stage_auto_improve_report(&state, ws, proj, req.session_id, &req, &report, proposals)
+            .await?;
+    let actor = actor_ext
+        .map(|axum::Extension(actor)| actor)
+        .unwrap_or_else(ai_memory_core::ActorContext::anonymous);
+    let author_id = author_ext.map(|axum::Extension(author_id)| author_id);
+    let skip_webhooks = skip_webhooks_for_admin_request(level_ext, &headers);
+    let outcomes = finalize_auto_improve_proposals(
+        &state,
+        &staged,
+        AutoImproveFinalizeContext {
+            workspace_id: ws,
+            project_id: proj,
+            require_approval: state.auto_improve_require_approval,
+            actor,
+            author_id,
+            admission_ctx: Some(AdmissionContext {
+                op: AdmissionOp::WritePage,
+                skip_webhooks,
+                ..AdmissionContext::default()
+            }),
+        },
+    )
+    .await?;
+    Ok((
+        StatusCode::OK,
+        Json(
+            serde_json::to_value(AutoImproveStageResponse {
+                run_id: staged.run_id.to_string(),
+                approval_required: state.auto_improve_require_approval,
+                approval_policy: if state.auto_improve_require_approval {
+                    "manual".into()
+                } else {
+                    "auto_approve".into()
+                },
+                session_id: req.session_id.to_string(),
+                summary: report.summary,
+                warnings: report.warnings,
+                rejected_candidates_count: report.rejected_candidates.len(),
+                proposals: outcomes,
+            })
+            .unwrap_or_else(|_| serde_json::json!({})),
+        ),
+    ))
+}
 
+fn auto_improve_auto_approve_actor(
+    mut actor: ai_memory_core::ActorContext,
+) -> ai_memory_core::ActorContext {
+    actor.agent = Some("auto_improve_auto_approve".into());
+    actor
+}
+
+struct AutoImproveFinalizeContext {
+    workspace_id: WorkspaceId,
+    project_id: ProjectId,
+    require_approval: bool,
+    actor: ai_memory_core::ActorContext,
+    author_id: Option<ai_memory_core::UserId>,
+    admission_ctx: Option<AdmissionContext>,
+}
+
+async fn finalize_auto_improve_proposals(
+    state: &AdminState,
+    staged: &StagedAutoImproveData,
+    ctx: AutoImproveFinalizeContext,
+) -> Result<Vec<AutoImproveProposalOutcome>, (StatusCode, Json<serde_json::Value>)> {
+    let mut outcomes = Vec::with_capacity(staged.proposal_ids.len());
+    for (proposal_id, sidecar_path) in staged.proposal_ids.iter().zip(staged.sidecar_paths.iter()) {
+        if ctx.require_approval {
+            outcomes.push(AutoImproveProposalOutcome {
+                id: proposal_id.to_string(),
+                sidecar_path: sidecar_path.clone(),
+                status: "pending".into(),
+                page_id: None,
+            });
+            continue;
+        }
+
+        let approval_actor = auto_improve_auto_approve_actor(ctx.actor.clone());
+        match state
+            .wiki
+            .approve_auto_improve_proposal(
+                ctx.workspace_id,
+                ctx.project_id,
+                *proposal_id,
+                approval_actor,
+                ctx.author_id,
+                ctx.admission_ctx.clone(),
+            )
+            .await
+        {
+            Ok(ApproveAutoImproveProposalResult::Approved { page_id }) => {
+                outcomes.push(AutoImproveProposalOutcome {
+                    id: proposal_id.to_string(),
+                    sidecar_path: sidecar_path.clone(),
+                    status: "approved".into(),
+                    page_id: Some(page_id.to_string()),
+                });
+            }
+            Ok(ApproveAutoImproveProposalResult::Conflict) => {
+                outcomes.push(AutoImproveProposalOutcome {
+                    id: proposal_id.to_string(),
+                    sidecar_path: sidecar_path.clone(),
+                    status: "conflict".into(),
+                    page_id: None,
+                });
+            }
+            Err(e) => return Err(internal_err(e.to_string())),
+        }
+    }
+    Ok(outcomes)
+}
+
+async fn auto_improve_new_proposals(
+    state: &AdminState,
+    ws: WorkspaceId,
+    proj: ProjectId,
+    report: &ai_memory_consolidate::AutoImproveReport,
+) -> Result<Vec<NewAutoImproveProposal>, (StatusCode, Json<serde_json::Value>)> {
     let mut proposals = Vec::with_capacity(report.proposals.len());
     for p in &report.proposals {
         let path = PagePath::new(p.path.clone()).map_err(|e| {
@@ -1096,12 +1213,30 @@ async fn handle_auto_improve(
             artifact_sha256: None,
         });
     }
+    Ok(proposals)
+}
+
+struct StagedAutoImproveData {
+    run_id: ai_memory_core::AutoImproveRunId,
+    proposal_ids: Vec<AutoImproveProposalId>,
+    sidecar_paths: Vec<String>,
+}
+
+async fn stage_auto_improve_report(
+    state: &AdminState,
+    ws: WorkspaceId,
+    proj: ProjectId,
+    session_id: SessionId,
+    req: &AutoImproveRequest,
+    report: &ai_memory_consolidate::AutoImproveReport,
+    proposals: Vec<NewAutoImproveProposal>,
+) -> Result<StagedAutoImproveData, (StatusCode, Json<serde_json::Value>)> {
     let staged = state
         .writer
         .stage_auto_improve_run(StageAutoImproveRun {
             workspace_id: ws,
             project_id: proj,
-            session_id: Some(req.session_id),
+            session_id: Some(session_id),
             provider: Some(report.provider.clone()),
             model: Some(report.model.clone()),
             summary: Some(report.summary.clone()),
@@ -1134,22 +1269,11 @@ async fn handle_auto_improve(
             .map_err(|e| internal_err(e.to_string()))?;
         sidecar_paths.push(path.display().to_string());
     }
-    Ok((
-        StatusCode::OK,
-        Json(
-            serde_json::to_value(AutoImproveStageResponse {
-                run_id: staged.run_id.to_string(),
-                proposal_ids: staged
-                    .proposal_ids
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-                sidecar_paths,
-                report,
-            })
-            .unwrap_or_else(|_| serde_json::json!({})),
-        ),
-    ))
+    Ok(StagedAutoImproveData {
+        run_id: staged.run_id,
+        proposal_ids: staged.proposal_ids,
+        sidecar_paths,
+    })
 }
 
 fn auto_improve_error_response(
@@ -4067,6 +4191,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm: None,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),
@@ -4107,6 +4232,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm: None,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),
@@ -4136,6 +4262,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),
@@ -4273,8 +4400,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_improve_rejects_missing_mode() {
-        let (_tmp, router) = read_page_test_router();
+    async fn auto_improve_requires_llm_provider() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
+        let ws = store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+        store
+            .writer
+            .get_or_create_project(ws, "audit", None)
+            .await
+            .unwrap();
+        let router = admin_router(admin_state_for_store(&tmp, &store, wiki));
 
         let resp = router
             .oneshot(
@@ -4286,8 +4426,7 @@ mod tests {
                         serde_json::to_vec(&serde_json::json!({
                             "workspace": "default",
                             "project": "audit",
-                            "session_id": "00000000-0000-0000-0000-000000000000",
-                            "dry_run": false
+                            "session_id": "00000000-0000-0000-0000-000000000000"
                         }))
                         .unwrap(),
                     ))
@@ -4296,14 +4435,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(
             json["error"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("dry_run=true or stage=true")
+                .contains("LLM provider not configured")
         );
     }
 
@@ -4321,8 +4460,7 @@ mod tests {
                         serde_json::to_vec(&serde_json::json!({
                             "workspace": "missing",
                             "project": "missing",
-                            "session_id": "00000000-0000-0000-0000-000000000000",
-                            "dry_run": true
+                            "session_id": "00000000-0000-0000-0000-000000000000"
                         }))
                         .unwrap(),
                     ))
@@ -4335,7 +4473,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_improve_stage_stages_rows_sidecars_and_concrete_operations() {
+    async fn auto_improve_auto_approves_by_default_and_uses_concrete_operations() {
         let tmp = TempDir::new().unwrap();
         let store = Store::open(tmp.path()).unwrap();
         let wiki = Wiki::new(tmp.path(), store.writer.clone())
@@ -4413,7 +4551,6 @@ mod tests {
                             "workspace": "default",
                             "project": "scratch",
                             "session_id": session_id.to_string(),
-                            "stage": true,
                             "min_observations": 1,
                             "min_session_duration_secs": 0,
                             "min_confidence": 0.75,
@@ -4429,12 +4566,14 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let proposal_ids = json["proposal_ids"].as_array().unwrap();
-        assert_eq!(proposal_ids.len(), 2);
-        let sidecar_paths = json["sidecar_paths"].as_array().unwrap();
-        assert_eq!(sidecar_paths.len(), 2);
-        for path in sidecar_paths {
-            let path = path.as_str().unwrap();
+        assert_eq!(json["approval_required"], false);
+        assert_eq!(json["approval_policy"], "auto_approve");
+        let proposals = json["proposals"].as_array().unwrap();
+        assert_eq!(proposals.len(), 2);
+        for proposal in proposals {
+            assert_eq!(proposal["status"], "approved");
+            assert!(proposal["page_id"].as_str().is_some());
+            let path = proposal["sidecar_path"].as_str().unwrap();
             assert!(
                 std::path::Path::new(path).exists(),
                 "sidecar file must be written: {path}"
@@ -4443,10 +4582,10 @@ mod tests {
 
         let staged = store
             .reader
-            .list_auto_improve_proposals(ws, proj, Some(AutoImproveProposalStatus::Pending), 10)
+            .list_auto_improve_proposals(ws, proj, Some(AutoImproveProposalStatus::Approved), 10)
             .await
             .unwrap();
-        assert_eq!(staged.len(), 2, "DB proposal rows must be staged");
+        assert_eq!(staged.len(), 2, "DB proposal rows must be approved");
         let slot = staged
             .iter()
             .find(|p| p.target_path.as_str() == "_slots/current-focus.md")
@@ -4464,7 +4603,106 @@ mod tests {
             .await
             .unwrap()
             .expect("existing target remains present");
-        assert_eq!(existing.body, "# Current Focus\n\nold focus");
+        assert_eq!(existing.body, "# Current Focus\n\nupdated focus proposal");
+        let note_page = store
+            .reader
+            .page_body_by_ids(ws, proj, "notes/new-auto-improve.md")
+            .await
+            .unwrap()
+            .expect("auto-approve writes absent target page");
+        assert_eq!(
+            note_page.body,
+            "# New Auto Improve Lesson\n\nnew page proposal"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_improve_require_approval_keeps_proposals_pending() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone())
+            .unwrap()
+            .with_store_reader(store.reader.clone());
+        let ws = store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+        let proj = store
+            .writer
+            .get_or_create_project(ws, "scratch", None)
+            .await
+            .unwrap();
+        let session_id = SessionId::new();
+        store
+            .writer
+            .begin_session(NewSession {
+                id: session_id,
+                workspace_id: ws,
+                project_id: proj,
+                agent_kind: AgentKind::Other,
+                cwd: None,
+            })
+            .await
+            .unwrap();
+        store
+            .writer
+            .insert_observation(NewObservation {
+                session_id,
+                workspace_id: ws,
+                project_id: proj,
+                kind: ObservationKind::UserPrompt,
+                extension: None,
+                source_event: None,
+                title: "prompt".into(),
+                body: "durable lesson".into(),
+                importance: 5,
+            })
+            .await
+            .unwrap();
+        let mut state =
+            admin_state_for_store_with_llm(&tmp, &store, wiki, Some(Arc::new(FakeAutoImproveLlm)));
+        state.auto_improve_require_approval = true;
+        let router = admin_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auto-improve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "workspace": "default",
+                            "project": "scratch",
+                            "session_id": session_id.to_string(),
+                            "min_observations": 1,
+                            "min_session_duration_secs": 0,
+                            "min_confidence": 0.75,
+                            "max_proposals_per_run": 5
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["approval_required"], true);
+        assert_eq!(json["approval_policy"], "manual");
+        let proposals = json["proposals"].as_array().unwrap();
+        assert_eq!(proposals.len(), 2);
+        assert!(proposals.iter().all(|p| p["status"] == "pending"));
+
+        let pending = store
+            .reader
+            .list_auto_improve_proposals(ws, proj, Some(AutoImproveProposalStatus::Pending), 10)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 2);
         assert!(
             store
                 .reader
@@ -4472,7 +4710,41 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none(),
-            "stage mode must not write absent target page"
+            "manual approval mode must not write target pages"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_improve_removed_mode_fields_fail_closed() {
+        let (_tmp, router) = read_page_test_router();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auto-improve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "workspace": "default",
+                            "project": "scratch",
+                            "session_id": "00000000-0000-0000-0000-000000000000",
+                            "dry_run": true
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("removed")
         );
     }
 
@@ -4913,6 +5185,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm: None,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),
@@ -5018,6 +5291,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm: None,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),
@@ -5116,6 +5390,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm: None,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),
@@ -5220,6 +5495,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm: None,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),
@@ -5303,6 +5579,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm: None,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),
@@ -5804,6 +6081,7 @@ mod tests {
             reader: store.reader.clone(),
             wiki,
             llm: None,
+            auto_improve_require_approval: false,
             embedder: None,
             provider_health: ProviderHealth::default(),
             decay_params: DecayParams::default(),

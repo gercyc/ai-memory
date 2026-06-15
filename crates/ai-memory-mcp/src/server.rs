@@ -12,6 +12,7 @@ use ai_memory_core::{
     SessionId, Tier, WorkspaceId,
 };
 use ai_memory_llm::{Embedder, LlmProvider};
+use ai_memory_store::{AutoImproveProposalOperation, NewAutoImproveProposal, StageAutoImproveRun};
 use ai_memory_store::{DecayParams, PageHit, ReaderPool, ScopeName, ScopeResolver, WriterHandle};
 use ai_memory_wiki::{Wiki, WikiError, WritePageRequest};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -92,10 +93,10 @@ the conversation calls for them:\n\
   session end only when AI_MEMORY_CONSOLIDATE_ON_SESSION_END is set.\n\
 - `memory_auto_improve` — when the user asks what durable lessons \
   should be proposed from a completed session, or at explicit wrap-up \
-  when learning review is useful. Dry-run only for now: it reads the \
-  latest completed session by default, returns proposed wiki edits with \
-  evidence, and never writes pages or pending proposals. Do NOT apply \
-  proposals with memory_write_page unless the user explicitly approves.\n\
+  when learning review is useful. It reads the latest completed session \
+  by default and applies validated edits through the auto-improvement \
+  approval path. Admins can set `[auto_improve] require_approval = true` \
+  to leave proposals in pending-writes for manual review.\n\
 - `memory_write_page` — when the user explicitly asks to remember, \
   save, or annotate durable project knowledge. This writes a wiki page; \
   do NOT use `memory_handoff_begin` for permanent annotations. \
@@ -194,6 +195,10 @@ pub struct AiMemoryServer {
     /// `memory_handoff_begin` (handoffs bypass `Wiki::write_page` so
     /// the wiki-level scrub doesn't cover them).
     sanitizer: ai_memory_core::Sanitizer,
+    /// If true, `memory_auto_improve` stages proposals for manual approval;
+    /// otherwise it immediately approves validated proposals through the normal
+    /// wiki write path.
+    auto_improve_require_approval: bool,
     // Read by the `#[tool_handler]` macro expansion; rustc's dead-code
     // analysis can't see that, so the lint must be allowed explicitly.
     #[allow(dead_code)]
@@ -342,10 +347,20 @@ struct AutoImproveArgs {
     /// session in the resolved current project.
     #[serde(default)]
     session_id: Option<String>,
-    /// Must be true or omitted. The MCP surface is dry-run only until pending
-    /// proposal storage and approval tools exist.
+    /// Removed compatibility field. Hidden from the tool schema; if an old
+    /// caller still sends it, fail closed instead of turning an old preview
+    /// request into an applying request.
     #[serde(default)]
+    #[schemars(skip)]
     dry_run: Option<bool>,
+    /// Removed compatibility field; hidden from schema and rejected if present.
+    #[serde(default)]
+    #[schemars(skip)]
+    stage: Option<bool>,
+    /// Removed compatibility field; hidden from schema and rejected if present.
+    #[serde(default)]
+    #[schemars(skip)]
+    mode: Option<String>,
     /// Project to review. Omit to target the project you're currently working
     /// in (resolved from recent hook activity). **Omit unless the user
     /// explicitly names a different project.**
@@ -592,8 +607,16 @@ impl AiMemoryServer {
             decay_params: DecayParams::default(),
             embedder: None,
             sanitizer: ai_memory_core::Sanitizer::builtin(),
+            auto_improve_require_approval: false,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Configure whether auto-improvement requires manual pending-writes approval.
+    #[must_use]
+    pub fn with_auto_improve_require_approval(mut self, require_approval: bool) -> Self {
+        self.auto_improve_require_approval = require_approval;
+        self
     }
 
     /// Replace the default built-in-only sanitizer with one carrying
@@ -1138,22 +1161,28 @@ impl AiMemoryServer {
         }
     }
 
-    /// Dry-run durable wiki edit proposals for a completed session.
+    /// Stage durable wiki edit proposals for a completed session.
     #[tool(
-        description = "Run a DRY-RUN auto-improvement review for one completed session. Use when the user asks what durable lessons should be proposed, what memory pages this session suggests, or at explicit wrap-up when a learning review is useful. Omit `session_id` to review the latest completed session in the current project. This is read-only: it never writes wiki files, pending proposals, or handoffs. Do NOT apply proposals with memory_write_page unless the user explicitly approves."
+        description = "Run auto-improvement for one completed session and apply validated wiki edit proposals through the auto-improvement approval path. Use when the user asks what durable lessons should be captured, what memory pages this session suggests, or at explicit wrap-up when a learning review is useful. Omit `session_id` to review the latest completed session in the current project. Admins can set `[auto_improve] require_approval = true` to leave proposals pending for manual review."
     )]
     async fn memory_auto_improve(
         &self,
         Parameters(args): Parameters<AutoImproveArgs>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        if args.dry_run == Some(false) {
+        if args.dry_run.is_some() || args.stage.is_some() || args.mode.is_some() {
             return Err(McpError::invalid_params(
-                "memory_auto_improve currently supports dry-run only",
+                "auto-improve dry_run/stage/mode arguments were removed; set [auto_improve].require_approval = true for manual review",
                 None,
             ));
         }
         let aps_actor = Self::actor_key_from_parts(Some(&parts));
+        let request_actor = parts
+            .extensions
+            .get::<ai_memory_core::ActorContext>()
+            .cloned()
+            .unwrap_or_else(ai_memory_core::ActorContext::anonymous);
+        let author_id = parts.extensions.get::<ai_memory_core::UserId>().copied();
         let (ws, proj) = self
             .effective_ids_for_read_args_with_actor(
                 args.workspace.as_deref(),
@@ -1164,6 +1193,12 @@ impl AiMemoryServer {
         let Some(llm) = self.llm.as_ref() else {
             return Err(McpError::internal_error(
                 "memory_auto_improve not configured (set AI_MEMORY_LLM_PROVIDER on the server)",
+                None,
+            ));
+        };
+        let Some(wiki) = self.wiki.as_ref() else {
+            return Err(McpError::internal_error(
+                "memory_auto_improve requires the server to be built with a wiki handle",
                 None,
             ));
         };
@@ -1203,10 +1238,132 @@ impl AiMemoryServer {
             pending_path: ai_memory_consolidate::DEFAULT_AUTO_IMPROVE_PENDING_PATH.into(),
         };
 
-        let report = run_auto_improve_review(&self.reader, &**llm, ws, proj, session_id, cfg)
+        let report =
+            run_auto_improve_review(&self.reader, &**llm, ws, proj, session_id, cfg.clone())
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let mut proposals = Vec::with_capacity(report.proposals.len());
+        for p in &report.proposals {
+            let path = PagePath::new(p.path.clone()).map_err(|e| {
+                McpError::invalid_params(format!("invalid proposal path: {e}"), None)
+            })?;
+            let operation = if self
+                .reader
+                .page_body_by_ids(ws, proj, path.as_str())
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                .is_some()
+            {
+                AutoImproveProposalOperation::Update
+            } else {
+                AutoImproveProposalOperation::Create
+            };
+            proposals.push(NewAutoImproveProposal {
+                operation,
+                target_path: path,
+                kind: p.kind.clone(),
+                title: p.title.clone(),
+                confidence: f64::from(p.confidence),
+                rationale: p.rationale.clone(),
+                evidence_json: serde_json::to_value(&p.evidence)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+                body_markdown: p.body_markdown.clone(),
+                artifact_sha256: None,
+            });
+        }
+        let staged = self
+            .writer
+            .stage_auto_improve_run(StageAutoImproveRun {
+                workspace_id: ws,
+                project_id: proj,
+                session_id: Some(session_id),
+                provider: Some(report.provider.clone()),
+                model: Some(report.model.clone()),
+                summary: Some(report.summary.clone()),
+                warnings_json: serde_json::to_value(&report.warnings)
+                    .unwrap_or_else(|_| serde_json::json!([])),
+                rejected_candidates_json: serde_json::to_value(&report.rejected_candidates)
+                    .unwrap_or_else(|_| serde_json::json!([])),
+                config_json: serde_json::json!({
+                    "min_observations": cfg.min_observations,
+                    "min_session_duration_secs": cfg.min_session_duration_secs,
+                    "min_confidence": cfg.min_confidence,
+                    "max_input_tokens": cfg.max_input_tokens,
+                    "max_proposals_per_run": cfg.max_proposals_per_run,
+                    "include_raw_fallback": cfg.include_raw_fallback,
+                }),
+                proposal_actor: ai_memory_core::ActorContext {
+                    agent: Some(cfg.proposal_actor.clone()),
+                    ..ai_memory_core::ActorContext::default()
+                },
+                proposals,
+            })
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        ok_json(&report)
+        let mut sidecar_paths = Vec::with_capacity(staged.proposal_ids.len());
+        for id in &staged.proposal_ids {
+            let path = wiki
+                .write_auto_improve_sidecar(ws, proj, *id)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            sidecar_paths.push(path.display().to_string());
+        }
+        let mut outcomes = Vec::with_capacity(staged.proposal_ids.len());
+        for (proposal_id, sidecar_path) in staged.proposal_ids.iter().zip(sidecar_paths.iter()) {
+            if self.auto_improve_require_approval {
+                outcomes.push(serde_json::json!({
+                    "id": proposal_id.to_string(),
+                    "sidecar_path": sidecar_path,
+                    "status": "pending",
+                    "page_id": null,
+                }));
+                continue;
+            }
+            let mut approval_actor = request_actor.clone();
+            approval_actor.agent = Some("auto_improve_auto_approve".into());
+            match wiki
+                .approve_auto_improve_proposal(
+                    ws,
+                    proj,
+                    *proposal_id,
+                    approval_actor,
+                    author_id,
+                    Some(ai_memory_wiki::AdmissionContext {
+                        op: ai_memory_wiki::AdmissionOp::WritePage,
+                        ..ai_memory_wiki::AdmissionContext::default()
+                    }),
+                )
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            {
+                ai_memory_store::ApproveAutoImproveProposalResult::Approved { page_id } => {
+                    outcomes.push(serde_json::json!({
+                        "id": proposal_id.to_string(),
+                        "sidecar_path": sidecar_path,
+                        "status": "approved",
+                        "page_id": page_id.to_string(),
+                    }));
+                }
+                ai_memory_store::ApproveAutoImproveProposalResult::Conflict => {
+                    outcomes.push(serde_json::json!({
+                        "id": proposal_id.to_string(),
+                        "sidecar_path": sidecar_path,
+                        "status": "conflict",
+                        "page_id": null,
+                    }));
+                }
+            }
+        }
+        ok_json(&serde_json::json!({
+            "run_id": staged.run_id.to_string(),
+            "approval_required": self.auto_improve_require_approval,
+            "approval_policy": if self.auto_improve_require_approval { "manual" } else { "auto_approve" },
+            "session_id": session_id.to_string(),
+            "summary": report.summary,
+            "warnings": report.warnings,
+            "rejected_candidates_count": report.rejected_candidates.len(),
+            "proposals": outcomes,
+        }))
     }
 
     /// Write or update a durable wiki page.
@@ -2256,18 +2413,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompts_expose_auto_improve_as_dry_run_only() {
+    async fn prompts_expose_auto_improve_as_auto_approval_with_manual_opt_in() {
         for prompt in [MEMORY_INSTRUCTIONS, ai_memory_core::SNIPPET_BODY] {
             let lower = prompt.to_ascii_lowercase();
             assert!(prompt.contains("memory_auto_improve"));
-            assert!(lower.contains("dry-run") || lower.contains("dry run"));
             assert!(
-                lower.contains("never writes") || lower.contains("never write"),
-                "prompt must state auto-improve review is non-mutating"
+                lower.contains("applies validated") || lower.contains("approval path"),
+                "prompt must state auto-improve applies through the approval path"
             );
             assert!(
-                lower.contains("explicitly approves") || lower.contains("explicitly approve"),
-                "prompt must require explicit approval before applying proposals"
+                lower.contains("require_approval") && lower.contains("pending-writes"),
+                "prompt must describe the manual review opt-in"
             );
         }
 
@@ -2281,8 +2437,8 @@ mod tests {
             .description
             .as_deref()
             .expect("memory_auto_improve must carry a description");
-        assert!(desc.contains("DRY-RUN") || desc.contains("dry-run"));
-        assert!(desc.contains("never writes"));
+        assert!(desc.contains("apply validated"));
+        assert!(desc.contains("approval"));
     }
 
     #[test]
@@ -4162,13 +4318,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_auto_improve_rejects_non_dry_run() {
+    async fn memory_auto_improve_removed_dry_run_arg_fails_closed() {
         let (_tmp, _store, server, _ws, _pj) = setup_server().await;
         let err = server
             .memory_auto_improve(
                 Parameters(AutoImproveArgs {
-                    session_id: None,
-                    dry_run: Some(false),
+                    session_id: Some("00000000-0000-0000-0000-000000000000".into()),
+                    dry_run: Some(true),
+                    stage: None,
+                    mode: None,
                     project: None,
                     workspace: None,
                     min_observations: None,
@@ -4181,11 +4339,11 @@ mod tests {
                 rmcp::handler::server::tool::Extension(test_parts_default()),
             )
             .await
-            .expect_err("auto-improve MCP tool must be dry-run only");
+            .expect_err("removed dry_run argument must fail closed");
         let msg = format!("{err:?}");
         assert!(
-            msg.contains("dry-run"),
-            "error should mention dry-run: {msg}"
+            msg.contains("removed"),
+            "error should mention removal: {msg}"
         );
     }
 
@@ -4196,7 +4354,9 @@ mod tests {
             .memory_auto_improve(
                 Parameters(AutoImproveArgs {
                     session_id: Some("00000000-0000-0000-0000-000000000000".into()),
-                    dry_run: Some(true),
+                    dry_run: None,
+                    stage: None,
+                    mode: None,
                     project: None,
                     workspace: None,
                     min_observations: None,

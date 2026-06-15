@@ -42,7 +42,7 @@ match the intent to the tool. They do not need to name the tool.
 | "save context for the next session" / wrapping up / ending this session | `memory_handoff_begin` (session-end only; do **not** use for status/briefing; single-use handoff; terse summary; put detail in `open_questions` + `next_steps` bullets; pass `workspace` + `project` together only for a named sibling workspace/project) |
 | "discard that handoff" / "I created a handoff by mistake" | `memory_handoff_cancel` (requires exact `handoff_id` from `memory_handoff_begin`; marks it expired before the next session sees it) |
 | "consolidate this session" / "compile what we learned" (also runs on PreCompact; at session end only if `AI_MEMORY_CONSOLIDATE_ON_SESSION_END` is set) | `memory_consolidate` |
-| "what did we learn from this session?" / "what memory should we add?" / explicit wrap-up learning review | `memory_auto_improve` (dry-run only; omit `session_id` for latest completed session; show proposals and evidence; do **not** apply/write them unless the user explicitly approves) |
+| "what did we learn from this session?" / "what memory should we add?" / explicit wrap-up learning review | `memory_auto_improve` (reviews a completed session and applies validated wiki edits through the auto-improvement approval path; omit `session_id` for latest completed session) |
 | "remember this permanently" / "save a note" / "add an annotation" / durable project knowledge | `memory_write_page` (write a wiki page; do **not** use handoff for permanent notes; put the title as a `# H1` on the first line of `body` and omit the `title` arg — ai-memory derives it from the H1) |
 | "read the page about X" / "show me the full content of Y" / "open the page on Z" | `memory_read_page` (full body; pass a query to search or `path` for a direct lookup; pass `workspace` + `project` together only for a named sibling workspace/project) |
 | "delete the page X" / "remove that note" | `memory_delete_page` (by exact `path`; idempotent; pass `workspace` + `project` together only for a named sibling workspace/project) |
@@ -96,12 +96,12 @@ query specific error/subsystem terms before designing a fix.
 
 ### Learning Review
 
-`memory_auto_improve` is a dry-run learning reviewer. Use it when the
-user asks what durable lessons this session suggests, or at explicit
-wrap-up when reviewing proposed memory would be useful. It returns
-proposed wiki edits with evidence and never writes pages or pending
-proposals. Do not apply proposals with `memory_write_page` unless the
-user explicitly approves.
+`memory_auto_improve` is a learning reviewer that applies validated wiki edits
+through the auto-improvement approval path. Use it when the user asks what
+durable lessons this session suggests, or at explicit wrap-up when reviewing
+proposed memory would be useful. Admins can opt into manual review with
+`[auto_improve] require_approval = true`, in which case proposals stay in
+pending-writes until approved.
 
 ### When you write a project rule, write it here
 

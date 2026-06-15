@@ -1,7 +1,6 @@
-//! `ai-memory auto-improve` — dry-run durable wiki edit proposals.
+//! `ai-memory auto-improve` — review one session and apply durable wiki edits through the auto-improvement approval path.
 
-use ai_memory_consolidate::AutoImproveReport;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::AutoImproveArgs;
@@ -14,8 +13,6 @@ struct AutoImproveRequest {
     workspace: String,
     project: String,
     session_id: String,
-    dry_run: bool,
-    stage: bool,
     min_observations: usize,
     min_session_duration_secs: u64,
     min_confidence: f32,
@@ -29,21 +26,28 @@ struct AutoImproveRequest {
 #[derive(Debug, Deserialize, Serialize)]
 struct StageResponse {
     run_id: String,
-    proposal_ids: Vec<String>,
-    sidecar_paths: Vec<String>,
-    report: AutoImproveReport,
+    approval_required: bool,
+    approval_policy: String,
+    session_id: String,
+    summary: String,
+    warnings: Vec<String>,
+    rejected_candidates_count: usize,
+    proposals: Vec<ProposalOutcome>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ProposalOutcome {
+    id: String,
+    sidecar_path: String,
+    status: String,
+    page_id: Option<String>,
 }
 
 /// Run the `auto-improve` subcommand.
 ///
 /// # Errors
-/// Returns an error if the command is not explicitly dry-run, if the server is
-/// unreachable, or if the server rejects the review request.
+/// Returns an error if the server is unreachable or rejects the review request.
 pub async fn run(config: &Config, args: AutoImproveArgs) -> Result<()> {
-    if args.dry_run == args.stage {
-        bail!("choose exactly one of --dry-run or --stage");
-    }
-
     let endpoint = ServerEndpoint::from_config(config);
     let project = super::resolve_project_name(config, args.project.as_deref())?;
     let settings = &config.auto_improve;
@@ -51,8 +55,6 @@ pub async fn run(config: &Config, args: AutoImproveArgs) -> Result<()> {
         workspace: args.workspace,
         project: project.clone(),
         session_id: args.session_id,
-        dry_run: args.dry_run,
-        stage: args.stage,
         min_observations: args.min_observations.unwrap_or(settings.min_observations),
         min_session_duration_secs: args
             .min_session_duration_secs
@@ -65,76 +67,32 @@ pub async fn run(config: &Config, args: AutoImproveArgs) -> Result<()> {
         pending_path: settings.pending_path.clone(),
     };
 
-    if args.stage {
-        let response: StageResponse = post_json(&endpoint, "/admin/auto-improve", &request).await?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&response)?);
-        } else {
-            println!("Staged auto-improve run {}", response.run_id);
-            for (id, path) in response
-                .proposal_ids
-                .iter()
-                .zip(response.sidecar_paths.iter())
-            {
-                println!("  - {id}: {path}");
-            }
-        }
+    let response: StageResponse = post_json(&endpoint, "/admin/auto-improve", &request).await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        let report: AutoImproveReport =
-            post_json(&endpoint, "/admin/auto-improve", &request).await?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+        if response.approval_required {
+            println!(
+                "Staged auto-improve run {} for manual approval",
+                response.run_id
+            );
         } else {
-            print_human_report(&report, &project);
-            println!("\n--- machine-readable ---");
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            println!("Auto-approved auto-improve run {}", response.run_id);
+        }
+        println!("Approval policy: {}", response.approval_policy);
+        for proposal in &response.proposals {
+            if let Some(page_id) = &proposal.page_id {
+                println!(
+                    "  - {} [{}] page {} ({})",
+                    proposal.id, proposal.status, page_id, proposal.sidecar_path
+                );
+            } else {
+                println!(
+                    "  - {} [{}] ({})",
+                    proposal.id, proposal.status, proposal.sidecar_path
+                );
+            }
         }
     }
     Ok(())
-}
-
-fn print_human_report(report: &AutoImproveReport, project: &str) {
-    println!(
-        "\nAuto-improve dry-run for {project} session {}\n",
-        report.session_id
-    );
-    println!("Summary: {}", report.summary);
-    println!(
-        "Input: {} observations, {}s span, ~{} tokens",
-        report.observations_considered, report.session_duration_secs, report.estimated_input_tokens
-    );
-    println!(
-        "Reviewer: {}/{}; min confidence {}",
-        report.provider, report.model, report.min_confidence
-    );
-    println!(
-        "Future staging: actor `{}`, path `{}`",
-        report.proposal_actor, report.pending_path
-    );
-
-    if report.proposals.is_empty() {
-        println!("\nValidated proposals: none");
-    } else {
-        println!("\nValidated proposals:");
-        for proposal in &report.proposals {
-            println!(
-                "  - {} [{}] confidence {:.2}: {}",
-                proposal.path, proposal.kind, proposal.confidence, proposal.title
-            );
-        }
-    }
-
-    if !report.rejected_candidates.is_empty() {
-        println!("\nRejected candidates:");
-        for rejected in &report.rejected_candidates {
-            println!("  - {}: {}", rejected.reason, rejected.evidence);
-        }
-    }
-
-    if !report.warnings.is_empty() {
-        println!("\nWarnings:");
-        for warning in &report.warnings {
-            println!("  - {warning}");
-        }
-    }
 }

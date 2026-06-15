@@ -54,7 +54,7 @@ the wiki without you naming tools explicitly.
 | "Save context for the next session" | `memory_handoff_begin` | Writes a terse session-end handoff with open questions and next steps. Do not use for status or briefing requests. |
 | "Discard that handoff" / "I created a handoff by mistake" | `memory_handoff_cancel` | Marks an exact open handoff id expired before the next session can consume it. |
 | "Consolidate this session" | `memory_consolidate` | Manually runs LLM consolidation. Also runs on PreCompact, and at session end only when `AI_MEMORY_CONSOLIDATE_ON_SESSION_END` is set (off by default; session end otherwise writes a rule-based summary page). |
-| "What did we learn from this session?" / "what memory should we add?" | `memory_auto_improve` | Dry-run learning review. Reviews the latest completed session by default, returns proposed wiki edits with evidence, and writes nothing. |
+| "What did we learn from this session?" / "what memory should we add?" | `memory_auto_improve` | Reviews the latest completed session by default and applies validated edits through the auto-improvement approval path. Admins can set `[auto_improve] require_approval = true` to leave proposals in pending-writes for manual review. |
 | "Remember this permanently" / "add an annotation" | `memory_write_page` | Writes durable wiki knowledge; not a single-use handoff. |
 | "Delete this page" / "remove the note about X" | `memory_delete_page` | Removes a page by exact path. Pass `workspace` + `project` together when the page lives in a sibling workspace, so a project name shared between workspaces never silently routes the delete to the wrong slot. |
 | "Audit the wiki" / "any contradictions?" | `memory_lint` | Runs stale-page, contradiction, and rule-suggestion checks. |

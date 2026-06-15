@@ -29,9 +29,10 @@ background reconciliation or provider-backed maintenance. The core invariant is
 unchanged: the markdown wiki is the source of truth, and SQLite is the derived
 index for search, sessions, observations, handoffs, audit, and embeddings.
 Auto-improvement sits on the provider-backed maintenance side: it reviews a
-completed session and returns validated proposals. CLI/admin dry-run writes
-nothing; CLI/admin stage mode stores pending proposal rows plus non-indexed
-sidecars for later approval. MCP remains dry-run-only.
+completed session, records validated proposals in the pending-writes audit trail,
+and auto-approves them through the normal wiki write path by default. Admins can
+set `[auto_improve] require_approval = true` to leave proposals pending for
+manual review.
 
 **Steady-state loop:**
 
@@ -55,13 +56,13 @@ sidecars for later approval. MCP remains dry-run-only.
 4. When `AI_MEMORY_LLM_PROVIDER` is set, `memory_consolidate` rewrites
    that summary into a richer durable page or fans out into a
    multi-page batch under `concepts/`, `decisions/`, `gotchas/`.
-5. On explicit CLI/admin request, `auto-improve --dry-run` previews one
-   completed session with the configured LLM, while `auto-improve --stage`
-   stores validated `concepts/`, `decisions/`, `gotchas/`, `procedures/`, and
-   `_rules/` proposals in the pending-writes queue. The MCP
-   `memory_auto_improve` tool remains dry-run-only. Auto-improvement does not
-   run on SessionEnd by default and staged proposals do not become durable wiki
-   pages until an explicit pending-writes approval.
+5. On explicit CLI/admin/MCP request, auto-improvement reviews one completed
+   session with the configured LLM, records validated `concepts/`, `decisions/`,
+   `gotchas/`, `procedures/`, and `_rules/` proposals in the pending-writes
+   audit trail, then approves them through the wiki mutation path by default.
+   Auto-improvement does not run on SessionEnd by default. With
+   `[auto_improve] require_approval = true`, proposals remain pending until an
+   explicit pending-writes approval.
 6. `memory_query` answers via FTS5 + link-neighbour RRF; when an
    embedder is configured, vector cosine over `page_embeddings` joins
    the same RRF. If compiled wiki pages miss entirely, bounded raw
@@ -213,7 +214,7 @@ invariants below.
 | `memory_handoff_accept` | destructive | Fetch + ack the latest open handoff (auto-cwd-matched by default). Optional `workspace` + `project` targets a named sibling workspace/project. |
 | `memory_handoff_cancel` | destructive | Mark an exact open handoff id expired when it was created by mistake. |
 | `memory_consolidate` | destructive | LLM-driven page rewrite. `multi_page=true` for atomic fan-out. |
-| `memory_auto_improve` | read-only | Dry-run durable wiki edit proposals for a completed session. Defaults to the latest completed session in the resolved current project and never writes pages or pending proposals. |
+| `memory_auto_improve` | write | Review a completed session and apply validated wiki edits through the auto-improvement approval path. Defaults to the latest completed session in the resolved current project; `[auto_improve] require_approval = true` leaves proposals pending for manual review. |
 | `memory_write_page` | destructive | Write durable wiki knowledge when the user explicitly asks to remember/annotate something permanent. |
 | `memory_delete_page` | destructive | Delete a single page by exact `path`. Fires the admission chain (op=delete); idempotent. |
 | `memory_forget_sweep` | destructive | M8 retention pass. `dry_run=true` for preview. |
@@ -232,7 +233,7 @@ must re-write its own routing rules into a project's `CLAUDE.md` /
 `AGENTS.md`, `memory_read_page` complements `memory_query` for the
 "I need the full page, not a snippet" case (e.g. opening a decision page
 end-to-end), `memory_auto_improve` exposes a safe default-on learning review
-without mutation, and `memory_delete_page` is the exact-path destructive pair
+through the same approval/write path as pending writes, and `memory_delete_page` is the exact-path destructive pair
 needed by admission-aware mirrors. `memory_handoff_cancel` is the safety valve
 for mistaken handoff creation. The narrow-surface discipline still holds —
 every new tool has to earn its slot — but the v1 count is 16, not 10.
@@ -319,10 +320,8 @@ mu = 0.04                          # ↑ if recent hits should count more
 cold_threshold = 0.20              # below this → soft-delete
 hard_delete_after_days = 180
 
-[auto_improve]                     # default-available, review-gated proposals
-enabled = true
-mode = "dry_run"                   # CLI/admin stage is explicit; no auto-apply
-on_session_end = false             # hooks never gain LLM latency on upgrade
+[auto_improve]                     # default-available learning reviewer
+require_approval = false           # true leaves proposals pending for review
 min_observations = 8
 min_session_duration_secs = 120
 min_confidence = 0.75

@@ -7,22 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `ai-memory auto-improve --session-id <uuid>` and `POST /admin/auto-improve`
+  now record validated proposals in the pending-writes audit trail and approve
+  them immediately through the normal wiki write path. Set
+  `[auto_improve] require_approval = true` to keep proposals pending for manual
+  review. The MCP `memory_auto_improve` tool uses the same behavior.
+- Existing project wikis need no migration. Existing server configs that
+  contain the old `[auto_improve] mode = ...` key keep working; the key is now
+  ignored and can be removed when convenient.
+
 ## [1.0.9] - 2026-06-15
 
 ### Fixed
 - Clarified architecture and auto-improvement design docs so CLI/admin
-  auto-improvement is described as dry-run by default with explicit staging and
-  pending-writes approval, while only the MCP tool remains dry-run-only.
+  auto-improvement is described with pending-writes storage and approval
+  boundaries.
 
 ## [1.0.8] - 2026-06-15
 
 ### Added
-- Added staged auto-improvement review: `ai-memory auto-improve --stage` and
-  `POST /admin/auto-improve` stage mode store validated proposals in durable
-  SQLite-backed pending-write rows with non-indexed `_pending/auto-improve/`
-  sidecars. The new `ai-memory pending-writes list|show|diff|approve|reject`
-  commands and `/admin/pending-writes*` routes let operators review, apply, or
-  reject those stored proposal bodies through the normal wiki mutation path.
+- Added auto-improvement proposal storage: `ai-memory auto-improve` and
+  `POST /admin/auto-improve` store validated proposals in durable SQLite-backed
+  pending-write rows with non-indexed `_pending/auto-improve/` sidecars. The new
+  `ai-memory pending-writes list|show|diff|approve|reject` commands and
+  `/admin/pending-writes*` routes let operators review, apply, or reject stored
+  proposal bodies through the normal wiki mutation path.
 - Added first-release curator support: `ai-memory curator` and
   `POST /admin/curator` run a rule-based, no-LLM, report-only maintenance
   review for an existing workspace/project. Dry-run is the default and writes
@@ -33,21 +43,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.7] - 2026-06-15
 
 ### Added
-- Added a dry-run-only auto-improvement reviewer: `ai-memory auto-improve
-  --dry-run --session-id <uuid>` calls `POST /admin/auto-improve`, reads one
-  completed session, applies preflight noise filters, samples large sessions via
-  the consolidated session page plus high-signal observations, asks the
-  configured LLM for structured durable wiki edit proposals, validates
-  path/evidence/confidence and duplicate existing path/title constraints, and
-  returns a report without writing wiki files or pending proposals. New
-  `[auto_improve]` config defaults are enabled in safe `dry_run` mode, with no
-  session-end trigger or writes unless a future staged/apply mode is explicitly
-  enabled. Thresholds remain configurable: confidence, input budget, proposal
-  cap, `auto_improve` attribution, and `_pending/auto-improve` staging path.
-- Added read-only MCP tool `memory_auto_improve` so agents can dry-run learning
-  review for the latest completed session (or a named session) without shelling
-  out. The canonical MCP instructions and installed CLAUDE.md/AGENTS.md routing
-  snippet now teach agents to treat `_rules/`, `gotchas/`, `procedures/`, and
+- Added the initial auto-improvement reviewer: `ai-memory auto-improve
+  --session-id <uuid>` calls `POST /admin/auto-improve`, reads one completed
+  session, applies preflight noise filters, samples large sessions via the
+  consolidated session page plus high-signal observations, asks the configured
+  LLM for structured durable wiki edit proposals, and validates
+  path/evidence/confidence plus duplicate existing path/title constraints.
+  Thresholds remain configurable: confidence, input budget, proposal cap,
+  `auto_improve` attribution, and `_pending/auto-improve` proposal path.
+- Added MCP tool `memory_auto_improve` so agents can run learning review for the
+  latest completed session (or a named session) without shelling out. The
+  canonical MCP instructions and installed CLAUDE.md/AGENTS.md routing snippet
+  now teach agents to treat `_rules/`, `gotchas/`, `procedures/`, and
   `decisions/` as actionable guidance for proactive retrieval.
 
 ### Changed
@@ -65,7 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `create_or_update` operation, markdown bodies can arrive as `body`,
   `markdown`, or `content`, plural/folder-style kind names are normalized before
   path validation, and proposals still missing required target data are rejected
-  by validation instead of turning the whole dry-run review into a 502 response.
+  by validation instead of turning the whole review into a 502 response.
 - Admin destructive ops (`/admin/purge-project`, `/admin/move-project`) now
   propagate the authenticated actor (from the auth middleware's
   `Extension<ActorContext>`) into the admission context, so a `scope-guard`

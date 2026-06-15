@@ -1,26 +1,27 @@
 # Optional Auto-Improvement Loop Research
 
-> Status: research plus phased implementation notes. The dry-run reviewer is
-> implemented for CLI/admin/MCP use and is safe to expose by default because it
-> does not mutate wiki files or pending proposals. Pending proposal storage,
-> approval, session-end triggers, and auto-apply remain proposed future work.
+> Status: research plus implemented production notes. CLI/admin/MCP
+> auto-improvement records validated proposals in the pending-writes audit trail
+> and auto-approves them through the normal wiki write path by default. Admins
+> can set `[auto_improve] require_approval = true` for manual review.
+> Session-end triggers remain future work.
 
 ## Executive Summary
 
 An ai-memory equivalent of Hermes Agent's self-improvement loop is worth
-building as a default-available dry-run review path, with staged review required
-before any write behavior. The current wiki already
-captures useful durable knowledge: decisions, gotchas, concepts, rules, notes,
-and session summaries. The missing piece is not more capture. It is a careful
-post-session reviewer that can identify durable lessons and propose small wiki
-patches without mutating the active agent context or silently promoting weak
-session residue into rules.
+shipping as a default-available, review-gated staging path. The current wiki
+already captures useful durable knowledge: decisions, gotchas, concepts, rules,
+notes, and session summaries. The missing piece is not more capture. It is a
+careful reviewer that can identify durable lessons and apply small wiki patches
+through the existing review/audit path without mutating the active agent context
+or silently promoting weak session residue into rules.
 
 The safe product shape is:
 
 1. Keep automatic observation capture and session consolidation as they are.
 2. Add an optional background review pass that creates pending wiki edits.
-3. Require approval by default before applying those edits.
+3. Record proposals and apply them through the approval/audit path by default,
+   with manual approval available as an admin opt-in.
 4. Keep a separate slow maintenance pass for deduplication, stale-page review,
    and lifecycle cleanup.
 
@@ -95,7 +96,7 @@ docs:
 
 First-run behavior is deliberately conservative. A fresh install seeds
 `last_run_at` and defers the first real pass by a full interval. Users can run a
-manual dry-run first.
+manual report first.
 
 Important curator properties:
 
@@ -106,7 +107,7 @@ Important curator properties:
 | Pinned objects | Pinned skills bypass automatic transitions. | Pinned pages and invariant slots must be protected. |
 | Reports | Writes machine-readable `run.json` and human `REPORT.md`. | Every maintenance run should leave an audit artifact. |
 | Backups | Takes snapshots before mutating runs and supports rollback. | Wiki git commits help, but approval reports should still be explicit. |
-| Dry run | Produces report-only preview. | Dry-run should be first-class. |
+| Report mode | Produces report-only output. | Non-destructive reports should be first-class for maintenance. |
 | Consolidation | Merges narrow skills into umbrellas with structured summary. | ai-memory should consolidate duplicate/narrow pages separately from fresh lesson capture. |
 
 ## Live ai-memory Wiki Findings
@@ -155,15 +156,15 @@ new memory substrate.
 
 ## Recommendation
 
-Build auto-improvement as a default-available review path, but keep the default
-mode read-only. Do not let it write directly to the wiki without review at
-first.
+Build auto-improvement as a default-available review path that records proposal
+provenance before writing target wiki pages. Manual CLI/admin/MCP runs apply
+validated proposals through the same approval path used by pending-writes;
+manual approval remains an admin opt-in.
 
-The initial feature should be a stage-only learning reviewer:
+The shipped feature is an audit-first learning reviewer:
 
-1. Dry-run review is enabled by default when an LLM provider is configured;
-   CLI/admin/MCP dry-runs still require that provider and can be invoked without
-   enabling any session-end trigger.
+1. CLI/admin/MCP auto-improvement is enabled when an LLM provider is configured.
+   Manual runs do not enable any session-end trigger.
 2. Reads a completed session, recent pages, and relevant existing wiki pages.
 3. Produces a structured proposal containing small page creates or updates.
 4. Stores the proposal in a pending-review queue with evidence and diffs.
@@ -171,7 +172,8 @@ The initial feature should be a stage-only learning reviewer:
    auth capabilities, audit logging, and the single writer actor.
 
 Auto-apply can be considered later for narrow, high-confidence updates, but the
-first version should earn trust through dry-runs and pending approvals.
+current version earns trust by recording staged proposals and applying them
+through the same approval path, while allowing admins to require manual review.
 
 ## Proposed Page Targets
 
@@ -208,8 +210,8 @@ The review prompt should explicitly reject these as durable learning:
 
 Any implementation should preserve these invariants:
 
-1. Off by default.
-2. Stage by default.
+1. Manual CLI/admin/MCP runs record proposals and auto-approve by default.
+2. Automatic SessionEnd triggering is off by default.
 3. Never mutate the active session prompt or already-prepended handoff context.
 4. Never run inside hook latency. Hooks remain fire-and-forget and bounded.
 5. Never bypass workspace/project isolation. Use `ScopeResolver` or its explicit
@@ -234,20 +236,19 @@ Any implementation should preserve these invariants:
 
 Default-available auto-improvement must not surprise existing installs:
 
-1. Dry-run review may be exposed by default, but it must not write wiki files,
-   pending proposals, handoffs, or audit rows. Staging must remain an explicit
-   operator action.
-2. Session-end triggering stays off until a bounded background scheduler and
-   proposal storage exist; hooks must not gain LLM latency as a side effect of
-   upgrade.
+1. Existing project wiki folders need no migration. Older configs may still
+   contain an `[auto_improve] mode = ...` key; current ai-memory ignores that
+   legacy key. Operators can remove the line when convenient.
+2. Session-end triggering stays off until a bounded background scheduler exists;
+   hooks must not gain LLM latency as a side effect of upgrade.
 3. Pending proposal storage must use additive, idempotent migrations that
    preserve all existing wiki files and session/observation rows.
 4. Existing installed `CLAUDE.md`/`AGENTS.md` blocks remain valid. Operators pick
    up newer proactive retrieval guidance by running `ai-memory install-instructions`
    or asking an agent to refresh the ai-memory routing block. The marker-based
    replacement must remain idempotent.
-5. Staged/apply modes must default to reviewable staging before any mutation
-   and must keep approval attribution separate from the autonomous
+5. Target-page mutations must pass through proposal staging first and must keep
+   approval attribution separate from the autonomous
    `auto_improve` proposal actor.
 
 ## Configuration Sketch
@@ -256,30 +257,26 @@ The exact names can change, but the shape should be explicit and conservative:
 
 ```toml
 [auto_improve]
-enabled = true
-mode = "dry_run"            # dry_run | stage | auto_apply, auto_apply future only
-on_session_end = false       # opt in separately from manual runs
+require_approval = false      # true leaves proposals pending for manual review
 min_observations = 8
 min_session_duration_secs = 120
-min_confidence = 0.75         # tune from dry-runs before any auto_apply mode
+min_confidence = 0.75         # tune before any future unattended trigger design
 max_input_tokens = 24000
 max_proposals_per_run = 5
 include_raw_fallback = false
 proposal_actor = "auto_improve"
 pending_path = "_pending/auto-improve"
-
-[auto_improve.maintenance]
-enabled = false
-interval_hours = 168
-min_idle_hours = 2
-dry_run_first = true
 ```
 
-`mode = "auto_apply"` should not ship until staged proposals have enough real
-usage to calibrate prompt quality and false-positive rates. The confidence
-threshold should remain configurable because real projects vary; initial values
-should be chosen from dry-runs against existing deployed wikis, not from prompt
-intuition alone.
+Future scheduled maintenance settings should live in a separate config section
+once that scheduler exists; do not copy unsupported `auto_improve.maintenance`
+keys into current configs.
+
+A future unattended session-end loop must not ship until manually-triggered
+auto-improvement has enough real usage to calibrate prompt quality and
+false-positive rates. The confidence threshold should remain configurable
+because real projects vary; initial values should be chosen from applied
+proposals against existing deployed wikis, not from prompt intuition alone.
 
 ## Proposal Format
 
@@ -317,18 +314,16 @@ or confidence below the configured threshold.
 
 ## Pending Review UX
 
-The first production UX is explicit and review-gated. The CLI/admin dry-run
-path previews proposals, `--stage` stores validated pending proposals, and
-`pending-writes` applies or rejects them later. The MCP tool remains dry-run
-only so agents can ask for a learning review without gaining an approval/apply
-surface.
+The first production UX is explicit and audit-gated. CLI/admin/MCP
+auto-improvement records validated pending proposals, then auto-approves them by
+default through the wiki mutation path. With `require_approval = true`,
+`pending-writes` applies or rejects them later.
 
 | Command or route | Purpose |
 |---|---|
-| `ai-memory auto-improve --dry-run` | Preview proposals for a project/session. |
-| `memory_auto_improve` | MCP dry-run preview for the latest completed session or a named session. |
-| `ai-memory auto-improve --stage` | Store pending proposals without applying. |
-| `ai-memory curator` | Rule-based, report-only maintenance review. Defaults to dry-run. |
+| `ai-memory auto-improve --session-id <id>` | Review one session and apply validated proposals through the auto-improvement approval path. |
+| `memory_auto_improve` | Review the latest completed session or a named session and apply validated proposals through the same path. |
+| `ai-memory curator` | Rule-based, report-only maintenance review. |
 | `ai-memory curator --stage` | Stage exactly one curator report page for pending-writes approval. |
 | `ai-memory pending-writes list` | Show staged wiki changes. |
 | `ai-memory pending-writes diff <id>` | Show markdown diff. |
@@ -346,6 +341,15 @@ regression tests assert `memory_auto_improve` appears in both prompt surfaces.
 Existing installed `CLAUDE.md`/`AGENTS.md` snippets update idempotently when the
 operator runs `ai-memory install-instructions` or asks an agent to refresh the
 ai-memory routing block.
+
+### Upgrade note for existing installs
+
+Existing project wiki folders need no migration. Pending proposal storage is a
+server-side database migration and sidecar directory.
+
+Older server configs may contain a now-ignored `[auto_improve] mode = ...` key.
+No data migration is required; remove the legacy line when convenient to avoid
+confusion.
 
 ## Maintenance Loop Shape
 
@@ -370,13 +374,12 @@ pages.
 
 ### Phase 1: Dry-Run Reviewer
 
-Status: implemented for explicit CLI/admin/MCP dry-runs; CLI/admin can also
-stage validated proposals for pending-writes review.
+Status: implemented for CLI/admin/MCP proposal staging plus default auto-approval.
 
 Add a library-level reviewer that consumes one completed session plus existing
-wiki context and returns validated proposals. Dry-run writes nothing. Stage mode
-requires an explicit `--session-id`, stores pending proposal rows plus sidecars,
-and still does not write durable wiki target pages until pending-writes approval.
+wiki context and returns validated proposals. The runtime stores pending
+proposal rows plus sidecars first, then approves them through the wiki mutation
+path unless `require_approval = true` is configured.
 
 The implemented reviewer is designed for existing projects with large histories:
 it treats the consolidated `sessions/<id>.md` page as the primary source when it
@@ -397,10 +400,12 @@ Tests:
 
 ### Phase 2: Pending Wiki Writes
 
-Add durable pending proposal storage under `_pending/auto-improve/`,
-list/diff/approve/reject commands, and audit rows. Approval applies through
-`Wiki::apply_batch` and existing admission hooks with the `auto_improve` actor
-preserved in proposal provenance.
+Status: implemented for CLI/admin staging, list/show/diff, approve, and reject.
+
+Durable pending proposal storage lives under `_pending/auto-improve/` as
+non-indexed sidecars plus SQLite rows, with list/diff/approve/reject commands
+and audit rows. Approval applies through the existing wiki mutation boundaries
+with the `auto_improve` actor preserved in proposal provenance.
 
 Tests:
 
@@ -433,7 +438,7 @@ retention scoring, links, and page metadata to propose merges/supersessions.
 
 Tests:
 
-1. First run defers or dry-runs before mutating behavior is possible.
+1. First run defers or reports before mutating behavior is possible.
 2. Pinned pages and invariant slots are skipped.
 3. Semantic pages are never hard-deleted.
 4. Proposed merges identify source and destination pages with evidence.
@@ -447,11 +452,11 @@ Tests:
 3. Autonomous proposals should be attributed to a distinct `auto_improve` actor,
    with approval attribution tracked separately.
 4. The minimum confidence threshold should be configurable and calibrated with
-   dry-runs on real projects before any future auto-apply mode is considered.
+   applied proposals on real projects before any future unattended trigger is considered.
 
 ## Remaining Open Question
 
-Should approval be CLI/admin-only at first, or exposed to agents through MCP?
+Should unattended SessionEnd auto-improvement ever be enabled by default?
 
 ## Current Conclusion
 
@@ -460,7 +465,7 @@ part is not that the agent can write memory by itself. The useful part is a
 bounded, observable, reviewable loop that turns repeated work into durable
 knowledge while keeping active task execution isolated.
 
-For ai-memory, the next correct step after the dry-run reviewer is pending
-proposal storage under `_pending/auto-improve/` plus approval/rejection commands.
-Direct autonomous wiki mutation should remain out of scope until staged proposals
-prove high signal in real deployments.
+For ai-memory, the current correct boundary is pending proposal storage under
+`_pending/auto-improve/` plus approval/rejection commands. Unattended
+SessionEnd mutation should remain out of scope until manually-triggered applied
+proposals prove high signal in real deployments.

@@ -164,6 +164,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
     let mut server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj)
         .with_wiki(wiki.clone())
         .with_decay_params(config.decay)
+        .with_auto_improve_require_approval(config.auto_improve.require_approval)
         .with_active_project(active_project.clone())
         .with_sanitizer(sanitizer.clone());
     if let Some(e) = embedder.clone() {
@@ -262,6 +263,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                 reader: store.reader.clone(),
                 wiki: wiki.clone(),
                 llm: admin_llm,
+                auto_improve_require_approval: config.auto_improve.require_approval,
                 embedder: embedder.clone(),
                 provider_health: provider_health.clone(),
                 decay_params: config.decay,

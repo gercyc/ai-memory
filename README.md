@@ -89,14 +89,14 @@ priors are at the [bottom](#influences-and-prior-art).
   session-aware current-project routing.
 - **Thin-client CLI.** `ai-memory status`, `bootstrap`, `checkpoints`,
     `restore-page`, `purge-project`, `rename-project`, `move-project`, `lint`,
-  `curator`, `auto-improve --dry-run`, `embed`, `forget-sweep`, `backup` are
+  `curator`, `auto-improve`, `pending-writes`, `embed`, `forget-sweep`, `backup` are
   all HTTP clients of the running server - never touch SQLite or
   wiki files directly. `status` also reports passive LLM/embedding
   provider health from the last real provider call. Server is the
   single source of truth.
 - **LLM is opt-in.** Zero-LLM mode still gives you FTS5 search +
   rule-based summarisation. Add a provider when you want consolidated
-  pages, lint contradictions, or dry-run auto-improvement proposals.
+  pages, lint contradictions, or staged auto-improvement proposals.
 
 ## Use cases
 
@@ -129,18 +129,23 @@ priors are at the [bottom](#influences-and-prior-art).
   one-shot-summarises them into seed wiki pages. Future sessions
   build on top.
 - **"What durable lesson did that session teach?"**
-  `ai-memory auto-improve --dry-run --session-id <uuid>` reviews one completed
-  session with the configured LLM and returns validated proposed wiki edits. It
-  writes nothing by default; `ai-memory auto-improve --stage --session-id <uuid>`
-  stores validated proposals in the pending-writes queue for later
-  `list`/`show`/`diff`/`approve`/`reject`. Agents can also call
-  `memory_auto_improve` to dry-run review the latest completed session in the
-  current project without knowing the session id.
+  `ai-memory auto-improve --session-id <uuid>` reviews one completed session
+  with the configured LLM, records proposed wiki edits in the pending-writes
+  audit trail, and approves them immediately through the normal wiki write path.
+  Agents can also call `memory_auto_improve` to review the latest completed
+  session in the current project without knowing the session id. If you want a
+  human review queue instead, set `[auto_improve] require_approval = true` and
+  use `pending-writes list`/`show`/`diff`/`approve`/`reject`.
+
+  Existing installs do not need per-project migration. Older configs may still
+  contain an `[auto_improve] mode = ...` line; current ai-memory ignores that
+  legacy key, so you can remove it when convenient.
 - **"What housekeeping should I consider?"**
   `ai-memory curator` runs a no-LLM, rule-based maintenance report over cold
   episodic pages, stale slots, duplicate exact normalized titles, and dangling
-  cross-project links. It defaults to dry-run; `--stage` queues one report page
-  for approval and still performs no maintenance actions itself.
+  cross-project links. It is report-only unless `--stage` is passed; staging
+  queues one report page for approval and still performs no maintenance actions
+  itself.
 - **"Run one ai-memory for the whole household."** Stand the server
   up on a homelab box at `0.0.0.0:49374` with a bearer token; every
   laptop/desktop talks to it. Per-cwd routing keeps each project's
@@ -551,7 +556,7 @@ diagram, crate breakdown, schema notes, and invariants.
 | [`docs/users.md`](docs/users.md) | **Multi-user attribution (v0.8).** Four-rung auth ladder, `ai-memory user add/list/expire/revive/rotate-token` walkthrough, backward-compat migration for pre-v0.8 installs, token storage rationale. |
 | [`docs/https-via-proxy.md`](docs/https-via-proxy.md) | **HTTPS via a reverse proxy.** When you need TLS (multi-user, non-loopback) and when you don't (loopback / stdio). Copy-paste docker compose templates for Caddy + Let's Encrypt, Caddy + internal CA (LAN-only), Cloudflare Tunnel (no open ports), and external cert files; plus native-Caddy + nginx recipes. The "thinking you're secure when you're not" failure modes explicitly called out. |
 | [`docs/lifecycle-ops.md`](docs/lifecycle-ops.md) | **Read before running purge / rename / backup / restore / reset / reindex / restore-page.** Safety matrix for state-touching commands, per-project disk layout (how isolation actually works), checkpoint-based page recovery, and operator workflows for "fresh start", "snapshot before risky op", "drop one project", and rebuilding SQLite from wiki files. |
-| [`docs/auto-improvement-loop.md`](docs/auto-improvement-loop.md) | Auto-improvement design notes: Hermes-inspired post-session review, dry-run defaults, approval boundaries, pending proposal storage, and future curator work. |
+| [`docs/auto-improvement-loop.md`](docs/auto-improvement-loop.md) | Auto-improvement design notes: Hermes-inspired post-session review, auto-approval default, manual review opt-in, pending proposal storage, and curator work. |
 | [`docs/llm-provider-comparison.md`](docs/llm-provider-comparison.md) | Empirical notes behind the recommended LLM defaults. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Operational summary: data flow, crate layout, cross-cutting invariants, schema. |
 | [`docs/design-decisions.md`](docs/design-decisions.md) | The full v1 spec. |

@@ -24,7 +24,8 @@ async fn make_admin_state(tmp: &TempDir) -> AdminState {
         writer: store.writer.clone(),
         reader: store.reader.clone(),
         wiki,
-        llm: None, // no LLM — dry-run path only
+        llm: None, // no LLM — bootstrap report path only
+        auto_improve_require_approval: false,
         embedder: None,
         provider_health: ai_memory_llm::ProviderHealth::default(),
         decay_params: DecayParams::default(),

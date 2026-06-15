@@ -36,7 +36,7 @@ endpoint. The trade-off:
 
 | | What you get | What you don't get |
 |---|---|---|
-| **MCP only** | LLM can query the wiki, accept handoffs, run memory_consolidate, and dry-run `memory_auto_improve` learning reviews | No automatic session-end summaries; no auto-handoff at session boundaries |
+| **MCP only** | LLM can query the wiki, accept handoffs, run memory_consolidate, and run `memory_auto_improve` learning reviews | No automatic session-end summaries; no auto-handoff at session boundaries |
 | **MCP + hooks** | All of the above *plus* every prompt/tool-call captured automatically; handoffs surface at SessionStart with no human prompting | - |
 
 For MCP-only use, you can still cover the session-boundary gap by asking

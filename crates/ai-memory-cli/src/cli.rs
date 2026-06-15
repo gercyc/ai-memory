@@ -81,7 +81,7 @@ pub enum Command {
     Lint(LintArgs),
     /// Run the rule-based curator report.
     Curator(CuratorArgs),
-    /// Dry-run an optional auto-improvement review for one completed session.
+    /// Run auto-improvement for one completed session.
     AutoImprove(AutoImproveArgs),
     /// Review, approve, or reject staged auto-improvement proposals.
     PendingWrites(PendingWritesArgs),
@@ -882,12 +882,6 @@ pub struct CuratorArgs {
 /// Arguments for `auto-improve`.
 #[derive(Debug, Args)]
 pub struct AutoImproveArgs {
-    /// Run reviewer without staging proposals.
-    #[arg(long)]
-    pub dry_run: bool,
-    /// Stage validated proposals for review.
-    #[arg(long)]
-    pub stage: bool,
     /// Completed session UUID to review.
     #[arg(long)]
     pub session_id: String,
@@ -1275,25 +1269,25 @@ mod tests {
     }
 
     #[test]
-    fn auto_improve_dry_run_parses_required_session() {
+    fn auto_improve_parses_required_session() {
         let cli = Cli::try_parse_from([
             "ai-memory",
             "auto-improve",
-            "--dry-run",
             "--session-id",
             "00000000-0000-0000-0000-000000000000",
+            "--project",
+            "scratch",
             "--max-proposals",
             "2",
         ])
-        .expect("auto-improve dry-run parses");
+        .expect("auto-improve parses");
 
         let Command::AutoImprove(args) = cli.command else {
             panic!("expected auto-improve command");
         };
-        assert!(args.dry_run);
         assert_eq!(args.session_id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(args.max_proposals, Some(2));
-        assert_eq!(args.project, None);
+        assert_eq!(args.project.as_deref(), Some("scratch"));
     }
 
     #[test]
@@ -1328,27 +1322,6 @@ mod tests {
         };
         assert!(args.stage);
         assert!(!args.dry_run);
-    }
-
-    #[test]
-    fn auto_improve_stage_parses_required_session() {
-        let cli = Cli::try_parse_from([
-            "ai-memory",
-            "auto-improve",
-            "--stage",
-            "--session-id",
-            "00000000-0000-0000-0000-000000000000",
-            "--project",
-            "scratch",
-        ])
-        .expect("auto-improve stage parses");
-
-        let Command::AutoImprove(args) = cli.command else {
-            panic!("expected auto-improve command");
-        };
-        assert!(args.stage);
-        assert!(!args.dry_run);
-        assert_eq!(args.project.as_deref(), Some("scratch"));
     }
 
     #[test]

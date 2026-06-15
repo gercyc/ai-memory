@@ -105,7 +105,9 @@ pub struct Config {
     pub decay: ai_memory_store::DecayParams,
     /// Server-side scheduled maintenance. Jobs run outside hook latency.
     pub maintenance: MaintenanceSettings,
-    /// Optional post-session auto-improvement reviewer. Off by default.
+    /// Optional auto-improvement reviewer. Manual CLI/admin runs approve
+    /// validated proposals by default unless `require_approval` is set; the
+    /// SessionEnd trigger stays off by default.
     pub auto_improve: AutoImproveSettings,
     /// Privacy-strip tuning. Built-in patterns always run; this section
     /// lets the operator extend or punch holes in them.
@@ -360,28 +362,14 @@ impl Default for Config {
     }
 }
 
-/// Write mode for the optional auto-improvement loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AutoImproveMode {
-    /// Report-only preview; no wiki or pending-proposal writes.
-    #[default]
-    DryRun,
-    /// Store proposals for human approval. Intended default once storage ships.
-    Stage,
-    /// Future mode only: apply narrow high-confidence proposals automatically.
-    AutoApply,
-}
-
 /// `[auto_improve]` optional post-session reviewer settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AutoImproveSettings {
-    /// Master switch. Defaults to false; manual dry-runs can still pass
-    /// explicit CLI flags without enabling the session-end trigger.
-    pub enabled: bool,
-    /// Configured write mode. The first shipped command supports dry-run only.
-    pub mode: AutoImproveMode,
+    /// Require manual pending-writes approval. Defaults false so validated
+    /// proposals are staged for audit and immediately approved through the
+    /// normal wiki write path.
+    pub require_approval: bool,
     /// Whether SessionEnd should schedule a reviewer run. Defaults off so hooks
     /// stay cheap and fire-and-forget.
     pub on_session_end: bool,
@@ -399,15 +387,14 @@ pub struct AutoImproveSettings {
     pub include_raw_fallback: bool,
     /// Synthetic actor used for autonomous proposal provenance.
     pub proposal_actor: String,
-    /// Wiki-relative pending proposal folder once staging ships.
+    /// Wiki-relative folder for non-indexed pending proposal sidecars.
     pub pending_path: String,
 }
 
 impl Default for AutoImproveSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
-            mode: AutoImproveMode::DryRun,
+            require_approval: false,
             on_session_end: false,
             min_observations: ai_memory_consolidate::DEFAULT_AUTO_IMPROVE_MIN_OBSERVATIONS,
             min_session_duration_secs:
@@ -804,9 +791,8 @@ mod tests {
         assert_eq!(cfg.maintenance.forget_sweep_interval_secs, 86_400);
         assert_eq!(cfg.maintenance.lint_interval_secs, 86_400);
         assert_eq!(cfg.maintenance.embedding_backfill_interval_secs, 0);
-        assert!(cfg.auto_improve.enabled);
-        assert_eq!(cfg.auto_improve.mode, AutoImproveMode::DryRun);
         assert!(!cfg.auto_improve.on_session_end);
+        assert!(!cfg.auto_improve.require_approval);
         assert_eq!(cfg.auto_improve.min_observations, 8);
         assert_eq!(cfg.auto_improve.min_session_duration_secs, 120);
         assert_eq!(
@@ -852,8 +838,8 @@ mod tests {
             lint_interval_secs = 3600
 
             [auto_improve]
-            enabled = true
             mode = "dry_run"
+            require_approval = true
             on_session_end = true
             min_observations = 3
             min_session_duration_secs = 45
@@ -874,9 +860,8 @@ mod tests {
         assert_eq!(cfg.log_level, "debug");
         assert!(!cfg.maintenance.enabled);
         assert_eq!(cfg.maintenance.lint_interval_secs, 3600);
-        assert!(cfg.auto_improve.enabled);
-        assert_eq!(cfg.auto_improve.mode, AutoImproveMode::DryRun);
         assert!(cfg.auto_improve.on_session_end);
+        assert!(cfg.auto_improve.require_approval);
         assert_eq!(cfg.auto_improve.min_observations, 3);
         assert_eq!(cfg.auto_improve.min_session_duration_secs, 45);
         assert_eq!(cfg.auto_improve.min_confidence, 0.9);
