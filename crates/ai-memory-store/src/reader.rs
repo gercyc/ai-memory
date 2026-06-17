@@ -3271,6 +3271,12 @@ impl ReaderPool {
     ///   LIKE '%\_%' ESCAPE '\\'` — refuses stored values containing
     ///   LIKE wildcards (`%`, `_`) so a stored `repo_path` can never
     ///   match unintended siblings.
+    /// - `?3 IS NULL OR repo_path <> ?3` — never matches a stored
+    ///   `repo_path` equal to the operator's home directory (`home`).
+    ///   Such a row would be a prefix catch-all for every project
+    ///   beneath `$HOME`; the caller passes the server's own `$HOME`
+    ///   (filesystem root `/` is already excluded by the
+    ///   `length(repo_path) > 1` guard). A `None` `home` is a no-op.
     /// - Input canonicalisation — trailing slashes stripped; cwds
     ///   containing dot-segments (`/foo/../bar`, `/./x`) are rejected
     ///   outright so a traversal-style path can't match a parent it
@@ -3286,7 +3292,9 @@ impl ReaderPool {
         &self,
         workspace_id: WorkspaceId,
         cwd: String,
+        home: Option<&str>,
     ) -> StoreResult<Option<(ProjectId, String)>> {
+        let home = home.map(str::to_owned);
         let cwd_norm = cwd.trim_end_matches('/').to_string();
         if !is_safe_cwd_for_prefix_match(&cwd_norm) {
             return Ok(None);
@@ -3306,10 +3314,11 @@ impl ReaderPool {
                        AND repo_path NOT LIKE '%/' \
                        AND repo_path NOT LIKE '%\\%%' ESCAPE '\\' \
                        AND repo_path NOT LIKE '%\\_%' ESCAPE '\\' \
+                       AND (?3 IS NULL OR repo_path <> ?3) \
                        AND (?2 = repo_path OR ?2 LIKE repo_path || '/%') \
                      ORDER BY length(repo_path) DESC \
                      LIMIT 1",
-                    params![workspace_id.as_bytes(), cwd_norm],
+                    params![workspace_id.as_bytes(), cwd_norm, home],
                     |row| {
                         let bytes: Vec<u8> = row.get(0)?;
                         let name: String = row.get(1)?;
@@ -3349,8 +3358,10 @@ impl ReaderPool {
     pub async fn audit_contamination(
         &self,
         scope: Option<(WorkspaceId, ProjectId)>,
+        home: Option<&str>,
     ) -> StoreResult<ContaminationReport> {
         let scoped = scope.is_some();
+        let home = home.map(str::to_owned);
         let scope_params: Vec<Value> = match &scope {
             Some((ws, proj)) => vec![
                 Value::Blob(ws.as_bytes().to_vec()),
@@ -3478,6 +3489,9 @@ impl ReaderPool {
                         })?;
                         for r in rows {
                             let (ws_b, proj_b, name, repo_path) = r?;
+                            if home.as_deref() == Some(repo_path.as_str()) {
+                                continue;
+                            }
                             prefixes.push((
                                 WorkspaceId::from_slice(&ws_b)?,
                                 ProjectId::from_slice(&proj_b)?,
@@ -3496,6 +3510,9 @@ impl ReaderPool {
                         })?;
                         for r in rows {
                             let (ws_b, proj_b, name, repo_path) = r?;
+                            if home.as_deref() == Some(repo_path.as_str()) {
+                                continue;
+                            }
                             prefixes.push((
                                 WorkspaceId::from_slice(&ws_b)?,
                                 ProjectId::from_slice(&proj_b)?,
@@ -4355,4 +4372,68 @@ fn open_read_only(path: &Path) -> StoreResult<Connection> {
     let conn = Connection::open_with_flags(path, flags)?;
     conn.pragma_update(None, "busy_timeout", 5_000)?;
     Ok(conn)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    /// A stored `repo_path` equal to the operator's `$HOME` must never be
+    /// prefix-matched: such a row would be a catch-all parent for every
+    /// project beneath the home directory. A normal nested repo under
+    /// `$HOME` must still match.
+    #[tokio::test]
+    async fn prefix_match_skips_home_dir_but_keeps_nested_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+        // A "$HOME catch-all" project whose repo_path is the home dir.
+        store
+            .writer
+            .get_or_create_project(ws, "home", Some(String::from("/home/tester")))
+            .await
+            .unwrap();
+        // A real nested repo beneath the home dir.
+        let app_id = store
+            .writer
+            .get_or_create_project(ws, "app", Some(String::from("/home/tester/projects/app")))
+            .await
+            .unwrap();
+
+        // A cwd somewhere under $HOME but not under any real repo must NOT
+        // resolve to the $HOME catch-all row.
+        let matched = store
+            .reader
+            .find_project_by_cwd_prefix(
+                ws,
+                String::from("/home/tester/random/dir"),
+                Some("/home/tester"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            matched, None,
+            "a stored repo_path equal to $HOME must never be prefix-matched"
+        );
+
+        // A cwd inside a genuine nested repo still resolves to that repo.
+        let matched = store
+            .reader
+            .find_project_by_cwd_prefix(
+                ws,
+                String::from("/home/tester/projects/app/src"),
+                Some("/home/tester"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            matched.map(|(id, _)| id),
+            Some(app_id),
+            "a genuine nested repo under $HOME must still prefix-match"
+        );
+    }
 }
