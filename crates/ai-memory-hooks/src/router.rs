@@ -479,15 +479,39 @@ async fn resolve_project_ids(
         // cwd turned any directory an agent merely opened a session in
         // (e.g. $HOME) into a catch-all that swallowed every project
         // nested beneath it (issue #103). The NAME still follows the
-        // strategy; repo_path is the git working dir containing the cwd
-        // (the strategy's root when it found one, else discovered here),
-        // or None when the cwd is not inside a git repo.
+        // strategy.
+        //
+        // The `MainRepoRoot` strategy hands back the repo root in `root`
+        // and names the project after it, so name and repo_path are
+        // aligned -- keep it. Under `Basename` the project is named after
+        // the cwd's leaf, so `root` is None and we may discover the
+        // enclosing repo. Adopt that repo root as repo_path ONLY when the
+        // cwd IS the repo root; for a subdir cwd the discovered root is a
+        // PREFIX of the cwd whose basename differs from the project name,
+        // so storing it would make a leaf project (e.g. `backend`) a
+        // catch-all that swallows the repo root and every sibling subdir
+        // (issue #103). A subdir cwd therefore stores None.
         ai_memory_consolidate::derive_project_name(path, strat).map(|(name, root)| {
             let repo_path = root
-                .or_else(|| ai_memory_consolidate::discover_repo_root(path).ok())
+                .or_else(|| {
+                    let repo_root = ai_memory_consolidate::discover_repo_root(path).ok()?;
+                    cwd_is_repo_root(path, &repo_root).then_some(repo_root)
+                })
                 .map(|p| p.to_string_lossy().into_owned());
             (name, repo_path)
         })
+    }
+
+    fn cwd_is_repo_root(cwd: &std::path::Path, repo_root: &std::path::Path) -> bool {
+        // git2's workdir may carry a trailing separator and resolves symlinks;
+        // canonicalize both before comparing. Fall back to a trailing-slash
+        // tolerant string compare if either path can't be canonicalized
+        // (both should exist in practice).
+        if let (Ok(a), Ok(b)) = (std::fs::canonicalize(cwd), std::fs::canonicalize(repo_root)) {
+            return a == b;
+        }
+        let strip = |p: &std::path::Path| p.to_string_lossy().trim_end_matches('/').to_string();
+        strip(cwd) == strip(repo_root)
     }
 
     let ws = state
@@ -1499,6 +1523,69 @@ mod tests {
                 .unwrap(),
             Some(proj_app),
             "nested repo cwd must resolve to its own 'app' project",
+        );
+    }
+
+    /// Under the default `Basename` strategy, the first hook fired from a
+    /// repo *subdirectory* must store its repo_path as the subdir (or NULL),
+    /// never the whole repo root. Storing the repo root would turn the leaf
+    /// project into a catch-all whose prefix swallows the repo root itself
+    /// and every sibling subdir (issue #103).
+    #[tokio::test]
+    async fn basename_subdir_first_does_not_capture_whole_repo() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+
+        let repo = tmp.path().join("myrepo");
+        init_repo_with_commit(&repo);
+
+        // First visit is a subdir, so the leaf project is created first.
+        let backend = repo.join("backend");
+        std::fs::create_dir_all(&backend).unwrap();
+        let (_ws_b, proj_backend) = resolve_project_ids(
+            &state,
+            Some(backend.to_str().unwrap()),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+
+        // A sibling subdir must become its own project, not be captured by
+        // the first-visited subdir's project via prefix-match.
+        let frontend = repo.join("frontend");
+        std::fs::create_dir_all(&frontend).unwrap();
+        let (_ws_f, proj_frontend) = resolve_project_ids(
+            &state,
+            Some(frontend.to_str().unwrap()),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            proj_frontend, proj_backend,
+            "a sibling subdir must not be captured by the first-visited subdir's project",
+        );
+
+        // The repo root itself must not be captured by a leaf subdir project.
+        let (_ws_r, proj_root) = resolve_project_ids(
+            &state,
+            Some(repo.to_str().unwrap()),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            proj_root, proj_backend,
+            "the repo root must not be captured by a leaf subdir project",
         );
     }
 
