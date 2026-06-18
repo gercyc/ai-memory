@@ -198,8 +198,9 @@ fn build_plugin(server_url: &str, auth_token: Option<&str>) -> String {
 // this local OpenClaw plugin package.
 
 import {{ definePluginEntry }} from "openclaw/plugin-sdk/plugin-entry";
+import {{ execFileSync }} from "node:child_process";
 import {{ existsSync, readFileSync }} from "node:fs";
-import {{ dirname, join, resolve }} from "node:path";
+import {{ basename, dirname, join, resolve }} from "node:path";
 import {{ homedir }} from "node:os";
 
 const SERVER = {server_literal}.replace(/\/+$/, "");
@@ -238,6 +239,27 @@ function tomlKey(text: string, key: string): string | undefined {{
   return undefined;
 }}
 
+
+function repoRootProject(cwd: string | undefined): string | undefined {{
+  if (!cwd) return undefined;
+  try {{
+    const inside = execFileSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], {{
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }}).trim();
+    if (inside !== "true") return undefined;
+    const common = execFileSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], {{
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }}).trim();
+    if (!common) return undefined;
+    const root = dirname(common);
+    if (!root || root === dirname(root)) return undefined;
+    return basename(root);
+  }} catch (_e) {{
+    return undefined;
+  }}
+}}
 function applyMarkerParams(url: URL, cwd: string | undefined): void {{
   if (!cwd) return;
   url.searchParams.set("cwd", cwd);
@@ -251,6 +273,10 @@ function applyMarkerParams(url: URL, cwd: string | undefined): void {{
     if (workspace) url.searchParams.set("workspace", workspace);
     if (project) url.searchParams.set("project", project);
     if (projectStrategy) url.searchParams.set("project_strategy", projectStrategy);
+    if (!project && (projectStrategy === "repo-root" || projectStrategy === "repo_root")) {{
+      const repoProject = repoRootProject(cwd);
+      if (repoProject) url.searchParams.set("project", repoProject);
+    }}
   }} catch (_e) {{
   }}
 }}
@@ -441,6 +467,15 @@ mod tests {
         assert!(plugin.contains("postHook(\"user-prompt\""));
         assert!(plugin.contains("function applyMarkerParams"));
         assert!(plugin.contains("tomlKey(body, \"project_strategy\")"));
+        assert!(plugin.contains("import { execFileSync } from \"node:child_process\";"));
+        assert!(plugin.contains("import { basename, dirname, join, resolve } from \"node:path\";"));
+        assert!(plugin.contains("function repoRootProject"));
+        assert!(plugin.contains("--git-common-dir"));
+        assert!(
+            plugin
+                .contains("projectStrategy === \"repo-root\" || projectStrategy === \"repo_root\"")
+        );
+        assert!(plugin.contains("url.searchParams.set(\"project\", repoProject)"));
         assert!(plugin.contains(
             "applyMarkerParams(url, typeof body.cwd === \"string\" ? body.cwd : undefined);"
         ));

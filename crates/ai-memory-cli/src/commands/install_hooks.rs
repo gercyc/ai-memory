@@ -958,6 +958,7 @@ fn build_opencode_plugin(server_url: &str, auth_token: Option<&str>) -> String {
 // re-run.
 
 import type {{ Plugin }} from "@opencode-ai/plugin";
+import {{ execFileSync }} from "node:child_process";
 import {{ existsSync, readFileSync }} from "node:fs";
 import {{ basename, dirname, join, resolve }} from "node:path";
 import {{ homedir }} from "node:os";
@@ -998,6 +999,27 @@ function tomlKey(text: string, key: string): string | undefined {{
   return undefined;
 }}
 
+
+function repoRootProject(cwd: string | undefined): string | undefined {{
+  if (!cwd) return undefined;
+  try {{
+    const inside = execFileSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], {{
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }}).trim();
+    if (inside !== "true") return undefined;
+    const common = execFileSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], {{
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }}).trim();
+    if (!common) return undefined;
+    const root = dirname(common);
+    if (!root || root === dirname(root)) return undefined;
+    return basename(root);
+  }} catch (_e) {{
+    return undefined;
+  }}
+}}
 function applyMarkerParams(url: URL, cwd: string | undefined): void {{
   const marker = findMarker(cwd);
   if (!marker || !cwd) return;
@@ -1010,8 +1032,9 @@ function applyMarkerParams(url: URL, cwd: string | undefined): void {{
     if (workspace) url.searchParams.set("workspace", workspace);
     if (project) url.searchParams.set("project", project);
     if (projectStrategy) url.searchParams.set("project_strategy", projectStrategy);
-    if (!project && projectStrategy === "repo-root") {{
-      url.searchParams.set("project", basename(dirname(marker)));
+    if (!project && (projectStrategy === "repo-root" || projectStrategy === "repo_root")) {{
+      const repoProject = repoRootProject(cwd);
+      if (repoProject) url.searchParams.set("project", repoProject);
     }}
   }} catch (_e) {{
   }}
@@ -1245,6 +1268,7 @@ fn build_omp_extension(server_url: &str, auth_token: Option<&str>) -> String {
 // will overwrite this file (with a `.bak-<ts>` backup) on each
 // re-run.
 
+import {{ execFileSync }} from "node:child_process";
 import {{ existsSync, readFileSync }} from "node:fs";
 import {{ basename, dirname, join, resolve }} from "node:path";
 import {{ homedir }} from "node:os";
@@ -1285,6 +1309,27 @@ function tomlKey(text: string, key: string): string | undefined {{
   return undefined;
 }}
 
+
+function repoRootProject(cwd: string | undefined): string | undefined {{
+  if (!cwd) return undefined;
+  try {{
+    const inside = execFileSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], {{
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }}).trim();
+    if (inside !== "true") return undefined;
+    const common = execFileSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], {{
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }}).trim();
+    if (!common) return undefined;
+    const root = dirname(common);
+    if (!root || root === dirname(root)) return undefined;
+    return basename(root);
+  }} catch (_e) {{
+    return undefined;
+  }}
+}}
 function applyMarkerParams(url: URL, cwd: string | undefined): void {{
   const marker = findMarker(cwd);
   if (!marker || !cwd) return;
@@ -1297,8 +1342,9 @@ function applyMarkerParams(url: URL, cwd: string | undefined): void {{
     if (workspace) url.searchParams.set("workspace", workspace);
     if (project) url.searchParams.set("project", project);
     if (projectStrategy) url.searchParams.set("project_strategy", projectStrategy);
-    if (!project && projectStrategy === "repo-root") {{
-      url.searchParams.set("project", basename(dirname(marker)));
+    if (!project && (projectStrategy === "repo-root" || projectStrategy === "repo_root")) {{
+      const repoProject = repoRootProject(cwd);
+      if (repoProject) url.searchParams.set("project", repoProject);
     }}
   }} catch (_e) {{
   }}
@@ -2554,8 +2600,15 @@ model = "gpt-5"
             !plugin.contains(r#""session.created": async"#),
             "OpenCode bus events must be handled through the `event` hook"
         );
+        assert!(plugin.contains("import { execFileSync } from \"node:child_process\";"));
         assert!(plugin.contains("import { basename, dirname, join, resolve } from \"node:path\";"));
-        assert!(plugin.contains("basename(dirname(marker))"));
+        assert!(plugin.contains("function repoRootProject"));
+        assert!(plugin.contains("--git-common-dir"));
+        assert!(
+            plugin
+                .contains("projectStrategy === \"repo-root\" || projectStrategy === \"repo_root\"")
+        );
+        assert!(plugin.contains("url.searchParams.set(\"project\", repoProject)"));
     }
 
     #[test]
@@ -2607,7 +2660,14 @@ model = "gpt-5"
         assert!(
             extension.contains("import { basename, dirname, join, resolve } from \"node:path\";")
         );
-        assert!(extension.contains("basename(dirname(marker))"));
+        assert!(extension.contains("import { execFileSync } from \"node:child_process\";"));
+        assert!(extension.contains("function repoRootProject"));
+        assert!(extension.contains("--git-common-dir"));
+        assert!(
+            extension
+                .contains("projectStrategy === \"repo-root\" || projectStrategy === \"repo_root\"")
+        );
+        assert!(extension.contains("url.searchParams.set(\"project\", repoProject)"));
     }
 
     #[test]

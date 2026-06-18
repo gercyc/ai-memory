@@ -436,7 +436,10 @@ async fn resolve_project_ids(
         .to_string();
 
     let (project_name, repo_path) = match (project_override, cwd_norm.as_deref()) {
-        (Some(p), Some(c)) => (p.to_string(), repo_path_from_cwd(c)),
+        (Some(p), Some(c)) => (
+            p.to_string(),
+            repo_path_from_project_override(c, p, project_strategy),
+        ),
         (Some(p), None) => (p.to_string(), None),
         (None, Some(c)) => match derive_project_from_cwd(c, project_strategy) {
             Some(resolved) => resolved,
@@ -504,6 +507,20 @@ async fn resolve_project_ids(
         let path = std::path::Path::new(cwd);
         let repo_root = ai_memory_consolidate::discover_repo_root(path).ok()?;
         cwd_is_repo_root(path, &repo_root).then(|| repo_root.to_string_lossy().into_owned())
+    }
+
+    fn repo_path_from_project_override(
+        cwd: &str,
+        project: &str,
+        strategy: ProjectStrategy,
+    ) -> Option<String> {
+        if matches!(strategy, ProjectStrategy::RepoRoot)
+            && let Some((name, Some(root))) = derive_project_from_cwd(cwd, strategy)
+            && name == project
+        {
+            return Some(root);
+        }
+        repo_path_from_cwd(cwd)
     }
 
     fn cwd_is_repo_root(cwd: &std::path::Path, repo_root: &std::path::Path) -> bool {
@@ -2589,6 +2606,46 @@ mod tests {
         assert_ne!(
             proj_override_repo_root, proj_repo_root,
             "explicit project override must beat repo-root derivation"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_resolved_repo_root_override_records_repo_path_when_visible() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+
+        let main_dir = tmp.path().join("repo");
+        init_repo_with_commit(&main_dir);
+        let app_dir = main_dir.join("app");
+        let sibling_dir = main_dir.join("sibling");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+
+        let (_, proj_from_host_override) = resolve_project_ids(
+            &state,
+            Some(app_dir.to_str().unwrap()),
+            None,
+            Some("repo"),
+            ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+
+        let (_, proj_from_sibling) = resolve_project_ids(
+            &state,
+            Some(sibling_dir.to_str().unwrap()),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            proj_from_sibling, proj_from_host_override,
+            "host-resolved repo-root override should still record repo_path so sibling cwd prefix-matches the repo project",
         );
     }
 

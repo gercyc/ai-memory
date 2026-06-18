@@ -100,8 +100,8 @@ Outcome:
 ### Git worktrees / repo-root identity
 
 ```
-~/projects/ai-memory/.ai-memory.toml → workspace        = "oss"
-                                      → project_strategy = "repo-root"
+~/projects/.ai-memory.toml → workspace        = "oss"
+                            → project_strategy = "repo-root"
 ```
 
 Outcome:
@@ -110,8 +110,24 @@ Outcome:
 - `~/projects/ai-memory/crates/cli`     → workspace = `oss`, project = `ai-memory`
 - `~/projects/ai-memory-feature-branch` → workspace = `oss`, project = `ai-memory`
 
+If the marker lives inside the main checkout instead (for example
+`~/projects/ai-memory/.ai-memory.toml`), copy or commit it into each
+out-of-tree worktree, or place a shared marker above the worktree parent
+directory as shown here.
+
 Without `project_strategy = "repo-root"`, those same paths keep the
 default behavior and resolve by their current directory basename.
+
+Resolution is host-side: lifecycle hooks and generated TypeScript
+plugins follow the worktree's commondir pointer (`git rev-parse
+--git-common-dir`, or the same Rust/libgit2 helper for native hooks) to
+the main repository and send the resolved name as an explicit `project`.
+This means it works even when the worktree directory lives **outside**
+the main repo tree (some tools keep worktrees in a separate directory,
+so the worktree has no `.ai-memory.toml` ancestor of its own) and even
+when the server runs in a container that cannot see the host checkout.
+Put the marker anywhere on the walk-up path from the worktree — commonly
+a single `~/.ai-memory.toml` — to select the strategy.
 
 ### Single workspace, no per-repo overrides
 

@@ -44,13 +44,33 @@ pub fn url_encode(s: &str) -> String {
 pub fn marker_query_suffix(cwd: &str) -> String {
     let mut qs = format!("&cwd={}", url_encode(cwd));
     if let Some(marker) = find_marker(cwd) {
-        for key in ["workspace", "project", "project_strategy"] {
-            if let Some(val) = parse_toml_key(&marker, key) {
-                qs.push_str(&format!("&{key}={}", url_encode(&val)));
-            }
+        let workspace = parse_toml_key(&marker, "workspace");
+        let mut project = parse_toml_key(&marker, "project");
+        let project_strategy = parse_toml_key(&marker, "project_strategy");
+        if project.is_none()
+            && matches!(project_strategy.as_deref(), Some("repo-root" | "repo_root"))
+        {
+            project = repo_root_project(cwd);
+        }
+        if let Some(val) = workspace {
+            qs.push_str(&format!("&workspace={}", url_encode(&val)));
+        }
+        if let Some(val) = project {
+            qs.push_str(&format!("&project={}", url_encode(&val)));
+        }
+        if let Some(val) = project_strategy {
+            qs.push_str(&format!("&project_strategy={}", url_encode(&val)));
         }
     }
     qs
+}
+
+fn repo_root_project(cwd: &str) -> Option<String> {
+    let root = ai_memory_consolidate::discover_main_repo_root(Path::new(cwd)).ok()?;
+    root.file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 /// Walk up from `cwd` toward `$HOME` (or the filesystem root) looking
@@ -349,6 +369,89 @@ project_strategy = "repo-root"
         // of the loop in `marker_query_suffix`.
         assert!(qs.contains("&workspace=acme%20corp"), "{qs}");
         assert!(qs.contains("&project=infra"), "{qs}");
+        assert!(qs.contains("&project_strategy=repo-root"), "{qs}");
+    }
+
+    #[test]
+    fn marker_query_suffix_repo_root_non_git_keeps_project_implicit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join(".ai-memory.toml"),
+            "workspace = \"oss\"\nproject_strategy = \"repo-root\"\n",
+        )
+        .unwrap();
+        let child = tmp.path().join("plain-dir");
+        std::fs::create_dir_all(&child).unwrap();
+        let qs = marker_query_suffix(child.to_str().unwrap());
+        assert!(qs.contains("&workspace=oss"), "{qs}");
+        assert!(!qs.contains("&project="), "{qs}");
+        assert!(qs.contains("&project_strategy=repo-root"), "{qs}");
+    }
+
+    #[test]
+    fn marker_query_suffix_repo_root_collapses_out_of_tree_worktree() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .status()
+            .is_err()
+        {
+            return;
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("repos/acme-api");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args([
+                    "-c",
+                    "user.email=t@example.com",
+                    "-c",
+                    "user.name=t",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "init",
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let worktrees = tmp.path().join("worktrees");
+        std::fs::create_dir_all(&worktrees).unwrap();
+        std::fs::write(
+            worktrees.join(".ai-memory.toml"),
+            "workspace = \"oss\"\nproject_strategy = \"repo-root\"\n",
+        )
+        .unwrap();
+        let wt = worktrees.join("acme-api/wt-feature");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        if !std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "add", "-q"])
+            .arg(&wt)
+            .status()
+            .unwrap()
+            .success()
+        {
+            return;
+        }
+
+        let qs = marker_query_suffix(wt.to_str().unwrap());
+        assert!(qs.contains("&workspace=oss"), "{qs}");
+        assert!(qs.contains("&project=acme-api"), "{qs}");
         assert!(qs.contains("&project_strategy=repo-root"), "{qs}");
     }
 }
