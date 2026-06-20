@@ -21,6 +21,8 @@ use std::path::Path;
 
 use serde_json::json;
 
+use crate::commands::path_util::strip_windows_verbatim_prefix;
+
 /// Claude Code lifecycle events ai-memory hooks. Each pair is
 /// `(event-name-in-Claude-Code-settings, POSIX hook-script-filename)`.
 ///
@@ -689,7 +691,9 @@ fn native_data_dir_arg(data_dir: Option<&Path>, quote: NativeQuote) -> String {
     let Some(data_dir) = data_dir else {
         return String::new();
     };
-    let path = data_dir.to_string_lossy();
+    // Render safe verbatim Windows data-dir forms as plain paths (#116).
+    let lossy = data_dir.to_string_lossy();
+    let path = strip_windows_verbatim_prefix(&lossy);
     match quote {
         NativeQuote::Posix => format!(" --data-dir {}", shell_quote(&path)),
         NativeQuote::Windows => format!(" --data-dir {}", win_double_quote(&path)),
@@ -1331,6 +1335,32 @@ mod tests {
             "{cmd}"
         );
         assert!(!cmd.contains("--auth-token"), "no token expected: {cmd}");
+    }
+
+    #[test]
+    fn windows_native_command_strips_verbatim_data_dir() {
+        // Regression for #116: native hook commands must render a plain data dir.
+        let cmd = hook_command(
+            &PathBuf::from(
+                r"C:/Users/me/AppData/Local/ai-memory/hooks/claude-code/post-tool-use.sh",
+            ),
+            "https://srv.example.com",
+            None,
+            HookCommandContext::new(
+                HookCommandPlatform::WindowsNative,
+                "claude-code",
+                Some(Path::new(r"\\?\C:\Users\me\AppData\Local\ai-memory")),
+            ),
+        );
+        assert!(
+            cmd.contains(r#"--data-dir "C:\Users\me\AppData\Local\ai-memory""#),
+            "plain data dir expected: {cmd}"
+        );
+        assert!(cmd.contains("hook --event post-tool-use"), "{cmd}");
+        assert!(
+            !cmd.contains(r"\\?\"),
+            "verbatim prefix must not leak into the hook command: {cmd}"
+        );
     }
 
     #[test]
