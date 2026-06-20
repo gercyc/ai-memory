@@ -2783,7 +2783,23 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let state = make_state(&tmp).await;
 
-        let main_dir = tmp.path().join("repo");
+        // Build the git repo under an underscore-free, canonicalized temp base.
+        // Two macOS-only traps otherwise break the sibling prefix-match below
+        // (Linux CI hits neither, so this test passes there): (1) the default
+        // `TempDir` resolves under `/var/folders/<hash>` whose hash contains a
+        // `_`, and `is_safe_cwd_for_prefix_match` rejects any cwd carrying a `_`
+        // LIKE-wildcard; (2) `/var` is a symlink to `/private/var`, but git2's
+        // repo discovery records the resolved `/private/var/...` path, so an
+        // unresolved sibling cwd wouldn't prefix-match it. `/tmp` (→
+        // `/private/tmp`) with a hyphenated prefix and tempfile's alphanumeric
+        // suffix yields an underscore-free path, and `canonicalize` resolves the
+        // symlink so both sides agree.
+        let repo_base = tempfile::Builder::new()
+            .prefix("ai-memory-reporoot-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let root = std::fs::canonicalize(repo_base.path()).unwrap();
+        let main_dir = root.join("repo");
         init_repo_with_commit(&main_dir);
         let app_dir = main_dir.join("app");
         let sibling_dir = main_dir.join("sibling");
