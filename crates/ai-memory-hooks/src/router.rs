@@ -1632,6 +1632,60 @@ mod tests {
         );
     }
 
+    /// A real `repo_path` containing a `_` must prefix-match its literal child
+    /// cwd (escaped, not rejected) AND must NOT match a path that differs only
+    /// where the `_` sits — proving `_` is literal, never a single-char
+    /// wildcard. Pre-fix, both the cwd `_` rejection and the repo_path `_`
+    /// rejection made any `my_app`-style project silently un-matchable.
+    #[tokio::test]
+    async fn resolve_matches_literal_underscore_repo_path() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let ws = state
+            .writer
+            .get_or_create_workspace(String::from(DEFAULT_WORKSPACE_NAME))
+            .await
+            .unwrap();
+        let parent = state
+            .writer
+            .get_or_create_project(ws, String::from("my_app"), Some(String::from("/repo/my_app")))
+            .await
+            .unwrap();
+
+        // Literal child → resolves to the existing `my_app` project.
+        let (_, resolved) = resolve_project_ids(
+            &state,
+            Some("/repo/my_app/src"),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolved, parent,
+            "a repo_path with `_` must prefix-match its literal child"
+        );
+
+        // `/repo/myXapp/...` must NOT match `/repo/my_app` (the `_` is literal,
+        // not a wildcard that would match the `X`).
+        let (_, other) = resolve_project_ids(
+            &state,
+            Some("/repo/myXapp/src"),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            other, parent,
+            "`_` must be literal, not a single-character LIKE wildcard"
+        );
+    }
+
     /// Cold-start preservation: when NO existing project's `repo_path`
     /// prefix-matches the cwd, the resolver must fall through to the
     /// previous create-by-basename behaviour. This is the "first time
@@ -2783,22 +2837,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let state = make_state(&tmp).await;
 
-        // Build the git repo under an underscore-free, canonicalized temp base.
-        // Two macOS-only traps otherwise break the sibling prefix-match below
-        // (Linux CI hits neither, so this test passes there): (1) the default
-        // `TempDir` resolves under `/var/folders/<hash>` whose hash contains a
-        // `_`, and `is_safe_cwd_for_prefix_match` rejects any cwd carrying a `_`
-        // LIKE-wildcard; (2) `/var` is a symlink to `/private/var`, but git2's
-        // repo discovery records the resolved `/private/var/...` path, so an
-        // unresolved sibling cwd wouldn't prefix-match it. `/tmp` (→
-        // `/private/tmp`) with a hyphenated prefix and tempfile's alphanumeric
-        // suffix yields an underscore-free path, and `canonicalize` resolves the
-        // symlink so both sides agree.
-        let repo_base = tempfile::Builder::new()
-            .prefix("ai-memory-reporoot-")
-            .tempdir_in("/tmp")
-            .unwrap();
-        let root = std::fs::canonicalize(repo_base.path()).unwrap();
+        // Canonicalize the temp root before deriving the repo paths. On macOS
+        // `TempDir` lives under `/var/folders/...`, a symlink to
+        // `/private/var/...`; git2's repo discovery records the resolved
+        // `/private/var/...` path, and the sibling cwd below is prefix-matched
+        // against it — so both sides must agree on the resolved form. (The `_`
+        // in the macOS temp hash no longer breaks the match:
+        // `find_project_by_cwd_prefix` now escapes `%`/`_` and matches them
+        // literally, so this also exercises that fix on macOS.)
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
         let main_dir = root.join("repo");
         init_repo_with_commit(&main_dir);
         let app_dir = main_dir.join("app");
