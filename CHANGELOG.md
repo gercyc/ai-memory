@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-06-20
+
 ### Fixed
 - Native Windows Claude Code hooks no longer silently drop every captured event.
   On Windows, `install-hooks` canonicalizes the data dir, which yields a verbatim
@@ -1271,7 +1273,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.1.3
 [1.1.2]: https://github.com/akitaonrails/ai-memory/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/akitaonrails/ai-memory/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.1.0
