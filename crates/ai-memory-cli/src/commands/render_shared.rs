@@ -1359,6 +1359,86 @@ mod tests {
         assert_eq!(s, "session-start.sh");
     }
 
+    // ── install-time --project-strategy baking (#128) ────────────────
+    // A baked `Some("repo-root")` must surface in every command arm; the
+    // default `None` must leave every arm byte-identical (no strategy).
+
+    fn strategy_cmd(platform: HookCommandPlatform, strategy: Option<&str>) -> String {
+        hook_command(
+            &PathBuf::from("/tmp/hooks/claude-code/session-start.sh"),
+            "http://localhost:49374",
+            None,
+            HookCommandContext::new(platform, "claude-code", None, strategy),
+        )
+    }
+
+    #[test]
+    fn posix_hook_command_bakes_project_strategy_env() {
+        let cmd = strategy_cmd(HookCommandPlatform::Posix, Some("repo-root"));
+        assert!(
+            cmd.contains("AI_MEMORY_PROJECT_STRATEGY=repo-root"),
+            "posix must bake the strategy env: {cmd}"
+        );
+    }
+
+    #[test]
+    fn windows_ps_hook_command_bakes_project_strategy_env() {
+        let cmd = strategy_cmd(HookCommandPlatform::Windows, Some("repo-root"));
+        assert!(
+            cmd.contains("$env:AI_MEMORY_PROJECT_STRATEGY='repo-root'"),
+            "powershell must bake the strategy env: {cmd}"
+        );
+    }
+
+    #[test]
+    fn windows_bash_hook_command_bakes_project_strategy_env() {
+        let cmd = strategy_cmd(HookCommandPlatform::WindowsBash, Some("repo-root"));
+        assert!(cmd.starts_with("bash -c "), "{cmd}");
+        assert!(
+            cmd.contains("AI_MEMORY_PROJECT_STRATEGY=repo-root"),
+            "windows-bash must bake the strategy env inside bash -c: {cmd}"
+        );
+    }
+
+    #[test]
+    fn posix_native_hook_command_passes_project_strategy_flag() {
+        let cmd = strategy_cmd(HookCommandPlatform::PosixNative, Some("repo-root"));
+        assert!(
+            cmd.contains("--project-strategy repo-root"),
+            "posix-native must pass the strategy flag: {cmd}"
+        );
+    }
+
+    #[test]
+    fn windows_native_hook_command_passes_project_strategy_flag() {
+        let cmd = strategy_cmd(HookCommandPlatform::WindowsNative, Some("repo-root"));
+        assert!(
+            cmd.contains(r#"--project-strategy "repo-root""#),
+            "windows-native must pass the strategy flag (double-quoted): {cmd}"
+        );
+    }
+
+    #[test]
+    fn hook_command_omits_project_strategy_when_none() {
+        for platform in [
+            HookCommandPlatform::Posix,
+            HookCommandPlatform::Windows,
+            HookCommandPlatform::WindowsBash,
+            HookCommandPlatform::PosixNative,
+            HookCommandPlatform::WindowsNative,
+        ] {
+            let cmd = strategy_cmd(platform, None);
+            assert!(
+                !cmd.contains("AI_MEMORY_PROJECT_STRATEGY"),
+                "{platform:?}: no strategy env when None: {cmd}"
+            );
+            assert!(
+                !cmd.contains("--project-strategy"),
+                "{platform:?}: no strategy flag when None: {cmd}"
+            );
+        }
+    }
+
     #[test]
     fn posix_native_hook_command_invokes_binary_directly() {
         let cmd = hook_command(
