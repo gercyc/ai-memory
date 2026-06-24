@@ -2748,6 +2748,33 @@ model = "gpt-5"
         );
     }
 
+    #[test]
+    fn opencode_plugin_bakes_repo_root_default() {
+        let plugin =
+            build_opencode_plugin("http://127.0.0.1:49374", Some("tok"), Some("repo-root"));
+        assert!(
+            plugin.contains("const DEFAULT_PROJECT_STRATEGY = \"repo-root\";"),
+            "repo-root install default must bake the const: {plugin}"
+        );
+        assert!(
+            plugin.contains("if (!projectStrategy) projectStrategy = DEFAULT_PROJECT_STRATEGY;"),
+            "must apply the default when a marker pins no strategy: {plugin}"
+        );
+        assert!(
+            plugin.contains("if (repoProject) project = repoProject;"),
+            "{plugin}"
+        );
+    }
+
+    #[test]
+    fn opencode_plugin_default_omits_baked_strategy() {
+        let plugin = build_opencode_plugin("http://127.0.0.1:49374", Some("tok"), None);
+        assert!(
+            !plugin.contains("DEFAULT_PROJECT_STRATEGY"),
+            "basename default must bake no strategy: {plugin}"
+        );
+    }
+
     // ----------------------------------------------------------------
     // OMP tests
     // ----------------------------------------------------------------
@@ -2788,6 +2815,29 @@ model = "gpt-5"
                 .contains("projectStrategy === \"repo-root\" || projectStrategy === \"repo_root\"")
         );
         assert!(extension.contains("url.searchParams.set(\"project\", repoProject)"));
+    }
+
+    #[test]
+    fn omp_extension_bakes_repo_root_default() {
+        let extension =
+            build_omp_extension("http://127.0.0.1:49374", Some("tok"), Some("repo-root"));
+        assert!(
+            extension.contains("const DEFAULT_PROJECT_STRATEGY = \"repo-root\";"),
+            "repo-root install default must bake the const: {extension}"
+        );
+        assert!(
+            extension.contains("if (!projectStrategy) projectStrategy = DEFAULT_PROJECT_STRATEGY;"),
+            "{extension}"
+        );
+    }
+
+    #[test]
+    fn omp_extension_default_omits_baked_strategy() {
+        let extension = build_omp_extension("http://127.0.0.1:49374", Some("tok"), None);
+        assert!(
+            !extension.contains("DEFAULT_PROJECT_STRATEGY"),
+            "{extension}"
+        );
     }
 
     #[test]

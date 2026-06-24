@@ -541,6 +541,28 @@ mod tests {
     }
 
     #[test]
+    fn openclaw_plugin_bakes_repo_root_default() {
+        let plugin = build_plugin("http://127.0.0.1:49374", Some("tok"), Some("repo-root"));
+        assert!(
+            plugin.contains("const DEFAULT_PROJECT_STRATEGY = \"repo-root\";"),
+            "repo-root install default must bake the const: {plugin}"
+        );
+        assert!(
+            plugin.contains("if (!projectStrategy) projectStrategy = DEFAULT_PROJECT_STRATEGY;"),
+            "must apply the default when a marker pins no strategy: {plugin}"
+        );
+    }
+
+    #[test]
+    fn openclaw_plugin_default_omits_baked_strategy() {
+        let plugin = build_plugin("http://127.0.0.1:49374", Some("tok"), None);
+        assert!(
+            !plugin.contains("DEFAULT_PROJECT_STRATEGY"),
+            "basename default must bake no strategy: {plugin}"
+        );
+    }
+
+    #[test]
     fn package_writes_all_required_files() {
         let tmp = TempDir::new().unwrap();
         let outcomes = write_package(tmp.path(), "http://127.0.0.1:49374", None, None).unwrap();
