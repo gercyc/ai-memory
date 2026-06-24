@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-24
+
 ### Added
 - `install-hooks --project-strategy repo-root` bakes a default project strategy
   into the generated hooks, so every session resolves its project from the main
@@ -1365,7 +1367,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.3.0
 [1.2.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.2.2
 [1.2.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.2.1
 [1.2.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.2.0
