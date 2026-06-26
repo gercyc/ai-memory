@@ -291,10 +291,11 @@ loopback server. With the local Docker quick start above, no
 
 To remove ai-memory later, run `ai-memory uninstall --apply` from the
 same host environment. It removes ai-memory-owned config entries, instruction
-blocks, managed skill files, and generated plugin files only after matching
-their ai-memory signatures; use `--mcp-url` if you installed MCP with a custom
-endpoint, and `--mcp-name` only when you need to narrow removal to one matching
-entry.
+blocks, default-root managed skill files, and generated plugin files only after
+matching their ai-memory signatures; custom skill roots installed with
+`--target-dir` are cleaned up manually. Use `--mcp-url` if you installed MCP
+with a custom endpoint, and `--mcp-name` only when you need to narrow removal to
+one matching entry.
 
 ### Install Notes
 

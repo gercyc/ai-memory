@@ -111,7 +111,7 @@ fn no_skills_writes_only_instruction_snippet() {
 }
 
 #[test]
-fn print_shows_snippet_and_skill_plan_without_mutating() {
+fn print_shows_only_snippet_without_mutating() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
 
@@ -125,9 +125,9 @@ fn print_shows_snippet_and_skill_plan_without_mutating() {
     assert!(stdout.contains("# Would write into:"));
     assert!(stdout.contains(MARKER_START));
     assert!(stdout.contains("Use the installed ai-memory Agent Skills"));
-    assert!(stdout.contains("# Skill root:"));
-    assert!(stdout.contains("ai-memory-retrieval/SKILL.md"));
-    assert!(stdout.contains(MANAGED_MARKER));
+    assert!(!stdout.contains("# Skill root:"));
+    assert!(!stdout.contains("ai-memory-retrieval/SKILL.md"));
+    assert!(!stdout.contains(MANAGED_MARKER));
     assert!(!project.path().join("CLAUDE.md").exists());
     assert!(!project.path().join(".claude/skills").exists());
     assert!(!project.path().join(".agents/skills").exists());

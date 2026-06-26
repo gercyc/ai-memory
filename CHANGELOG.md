@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payloads, target hints, and overwrite guidance for agents that install
   routing through MCP.
 
+### Added
+- The native `session-end` hook now emits a one-line stderr note when the spool
+  drain leaves events queued for a later boundary: it reports how many events
+  were flushed, how many remain queued, whether any events were dropped as
+  undeliverable, and names the knobs to bound the backlog
+  (`AI_MEMORY_HOOK_END_BUDGET_MINUTES`, `AI_MEMORY_HOOK_INCREMENTAL_THRESHOLD`),
+  turning an otherwise silent, scary cancelled-hook symptom into an actionable,
+  self-documenting message. A fully-drained session stays silent. (#130)
+- `ai-memory uninstall --only skills` now removes ai-memory-managed Agent Skill
+  files from the default project/global `.claude/skills` and `.agents/skills`
+  roots after marker validation; custom `--target-dir` skill roots remain a
+  manual cleanup path.
+
 ## [1.3.0] - 2026-06-24
 
 ### Added

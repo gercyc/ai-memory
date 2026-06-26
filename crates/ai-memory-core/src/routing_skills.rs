@@ -6,6 +6,13 @@
 /// Stable ownership marker embedded in every managed ai-memory skill file.
 pub const MANAGED_MARKER: &str = "<!-- ai-memory-managed: routing-skill -->";
 
+/// Claude-compatible Agent Skill directory below a project or home root.
+pub const CLAUDE_SKILL_DIR: &str = ".claude";
+/// AGENTS-aware cross-client Agent Skill directory below a project or home root.
+pub const AGENTS_SKILL_DIR: &str = ".agents";
+/// Leaf directory that contains individual Agent Skill directories.
+pub const SKILLS_DIR: &str = "skills";
+
 const RETRIEVAL_DESCRIPTION: &str = "Use this skill for any request whose goal is read-only retrieval from ai-memory: project history, prior context, decisions, rules, gotchas, recent activity, full wiki pages, or status/briefing. Trigger by semantic intent rather than exact wording, including when ai-memory is not named.";
 const HANDOFF_DESCRIPTION: &str = "Use this skill for any request whose goal is session continuity across agents or time: finding a pending handoff, resuming previous work, saving next-session context, wrapping up, or discarding a mistaken handoff. Trigger by semantic intent rather than exact wording.";
 const DURABLE_PAGES_DESCRIPTION: &str = "Use this skill for any explicit durable wiki mutation in ai-memory: saving project knowledge, recording a rule or annotation, updating a permanent note, or deleting a memory page. Trigger by semantic intent rather than exact wording; routine session capture is not a durable-page request.";
@@ -62,6 +69,8 @@ pub const MANAGED_SKILLS: &[ManagedSkill] = &[
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::ffi::OsStr;
+    use std::path::{Component, Path};
 
     use super::{MANAGED_MARKER, MANAGED_SKILLS, ManagedSkill};
 
@@ -92,10 +101,10 @@ mod tests {
         ("memory_install_self_routing", "ai-memory-routing-install"),
     ];
 
-    #[derive(Debug)]
-    struct Frontmatter<'a> {
-        name: &'a str,
-        description: &'a str,
+    #[derive(Debug, serde::Deserialize)]
+    struct Frontmatter {
+        name: String,
+        description: String,
     }
 
     #[test]
@@ -133,10 +142,32 @@ mod tests {
     }
 
     #[test]
-    fn relative_paths_are_skill_markdown_files() {
+    fn relative_paths_are_safe_relative_skill_markdown_files() {
         for skill in MANAGED_SKILLS {
             let expected_suffix = format!("{}/SKILL.md", skill.name);
             assert_eq!(skill.relative_path, expected_suffix);
+            assert!(
+                !skill.name.contains(['/', '\\']),
+                "{} must be a single skill directory name",
+                skill.name
+            );
+
+            let path = Path::new(skill.relative_path);
+            assert!(
+                !path.is_absolute(),
+                "{} relative_path must not be absolute",
+                skill.name
+            );
+            let components: Vec<_> = path.components().collect();
+            assert_eq!(
+                components,
+                vec![
+                    Component::Normal(OsStr::new(skill.name)),
+                    Component::Normal(OsStr::new("SKILL.md")),
+                ],
+                "{} relative_path must be exactly <skill>/SKILL.md with no parent/current/root components",
+                skill.name
+            );
         }
     }
 
@@ -160,37 +191,15 @@ mod tests {
         }
     }
 
-    fn parse_frontmatter(skill: &ManagedSkill) -> Frontmatter<'_> {
-        let mut lines = skill.content.lines();
-        assert_eq!(
-            lines.next(),
-            Some("---"),
-            "{} must start with frontmatter",
-            skill.name
-        );
-
-        let mut name = None;
-        let mut description = None;
-        let mut closed = false;
-        for line in lines.by_ref() {
-            if line == "---" {
-                closed = true;
-                break;
-            }
-
-            if let Some(value) = line.strip_prefix("name: ") {
-                name = Some(value.trim());
-            } else if let Some(value) = line.strip_prefix("description: ") {
-                description = Some(value.trim());
-            }
-        }
-        assert!(closed, "{} must close frontmatter", skill.name);
-
-        Frontmatter {
-            name: name.unwrap_or_else(|| panic!("{} is missing frontmatter name", skill.name)),
-            description: description
-                .unwrap_or_else(|| panic!("{} is missing frontmatter description", skill.name)),
-        }
+    fn parse_frontmatter(skill: &ManagedSkill) -> Frontmatter {
+        let Some(rest) = skill.content.strip_prefix("---\n") else {
+            panic!("{} must start with frontmatter", skill.name);
+        };
+        let Some((frontmatter, _body)) = rest.split_once("\n---\n") else {
+            panic!("{} must close frontmatter", skill.name);
+        };
+        serde_yaml::from_str(frontmatter)
+            .unwrap_or_else(|e| panic!("{} frontmatter must be valid YAML: {e}", skill.name))
     }
 
     fn directory_name(skill: &ManagedSkill) -> &str {

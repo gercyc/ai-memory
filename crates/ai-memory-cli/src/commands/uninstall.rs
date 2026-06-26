@@ -13,7 +13,9 @@ use crate::commands::apply_shared::mutate_json;
 use crate::commands::apply_shared::mutate_toml;
 use crate::commands::{data_purge, install_hooks, install_mcp, openclaw_plugin};
 use crate::config::Config;
-use ai_memory_core::routing_skills::{MANAGED_MARKER, MANAGED_SKILLS};
+use ai_memory_core::routing_skills::{
+    AGENTS_SKILL_DIR, CLAUDE_SKILL_DIR, MANAGED_MARKER, MANAGED_SKILLS, SKILLS_DIR,
+};
 use ai_memory_core::{MARKER_END, MARKER_START};
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
@@ -255,11 +257,11 @@ fn build_plan(args: &UninstallArgs) -> anyhow::Result<Vec<PlannedChange>> {
 
 fn skill_roots(cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
     let mut roots = Vec::with_capacity(4);
-    push_unique_skill_root(&mut roots, cwd.join(".claude").join("skills"));
-    push_unique_skill_root(&mut roots, cwd.join(".agents").join("skills"));
+    push_unique_skill_root(&mut roots, cwd.join(CLAUDE_SKILL_DIR).join(SKILLS_DIR));
+    push_unique_skill_root(&mut roots, cwd.join(AGENTS_SKILL_DIR).join(SKILLS_DIR));
     if let Some(home) = home {
-        push_unique_skill_root(&mut roots, home.join(".claude").join("skills"));
-        push_unique_skill_root(&mut roots, home.join(".agents").join("skills"));
+        push_unique_skill_root(&mut roots, home.join(CLAUDE_SKILL_DIR).join(SKILLS_DIR));
+        push_unique_skill_root(&mut roots, home.join(AGENTS_SKILL_DIR).join(SKILLS_DIR));
     }
     roots
 }

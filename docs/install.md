@@ -947,7 +947,7 @@ docker run --rm akitaonrails/ai-memory:latest --help     # full subcommand tree
 | `install-hooks --agent` | `docker run --rm` | Hook-config snippet for an existing hooks dir |
 | `setup-agent --agent --to --host-prefix` | `docker run --rm -v` | Extract bundled scripts + print config (one-shot) |
 | `install-instructions [--target] [--print] [--no-skills]` | same host environment used for the agent prompt files | Install or update the slim CLAUDE.md / AGENTS.md routing block and, by default, the managed ai-memory Agent Skills |
-| `install-skills --scope --agent` | same host environment used for the agent skill dirs | Install or update only the managed ai-memory Agent Skills |
+| `install-skills [--scope] [--agent]` | same host environment used for the agent skill dirs | Install or update only the managed ai-memory Agent Skills |
 | `uninstall --apply` | same host environment used for install | Remove only ai-memory-owned hooks, MCP entries, instruction blocks, managed skill files, and generated plugin files after content/marker validation. Use `--mcp-url` for custom MCP endpoints and `--mcp-name` only to narrow removal. |
 | `llm-test --provider …` | `docker run --rm -e …` | Smoke-test an LLM provider |
 
@@ -970,6 +970,8 @@ block between those markers, the refresh replaces that block in place with the
 slim snippet and leaves unrelated instructions before and after it alone.
 Managed skill files contain an ai-memory ownership marker; same-name user skills
 without that marker are preserved unless you explicitly force replacement.
+`install-instructions --print` previews only the instruction snippet; run
+`install-skills --print` when you want to preview the managed skill payloads.
 
 `install-instructions` flags for skills:
 
@@ -1009,6 +1011,11 @@ Default skill target roots:
 | `global` | `~/.claude/skills` | `~/.agents/skills` |
 
 Each managed skill is written as `<root>/<skill-name>/SKILL.md`.
+
+`ai-memory uninstall --only skills --apply` removes managed skill files only
+from the default project/global roots shown above, after validating the
+ai-memory ownership marker. If you installed with `--target-dir` or
+`--skills-target-dir`, clean up that custom root manually.
 
 Data dir inside the container is `/data` (mounted via the compose
 volume). Outside docker, override with `AI_MEMORY_DATA_DIR=/path`.

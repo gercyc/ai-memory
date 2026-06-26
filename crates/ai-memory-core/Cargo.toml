@@ -22,5 +22,8 @@ tracing.workspace = true
 # the model invent integer tier values).
 schemars.workspace = true
 
+[dev-dependencies]
+serde_yaml.workspace = true
+
 [lints]
 workspace = true

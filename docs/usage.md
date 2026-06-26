@@ -93,8 +93,10 @@ ai-memory install-instructions --no-skills
 ```
 
 `install-instructions` installs or updates managed skills by default. Use
-`--no-skills` only when you intentionally want a snippet-only refresh. Skill
-flags mirror `install-skills` with an `--skills-` prefix:
+`--no-skills` only when you intentionally want a snippet-only refresh.
+`install-instructions --print` previews the instruction snippet only; use
+`install-skills --print` to preview skill payloads. Skill flags mirror
+`install-skills` with an `--skills-` prefix:
 `--skills-scope project|global`, `--skills-agent claude-code|agents|both`,
 `--skills-target-dir <dir>`, and `--skills-force`.
 
@@ -119,7 +121,9 @@ and `.agents/skills` for cross-client installs. Global roots are
 `~/.claude/skills` and `~/.agents/skills`. `--target-dir` points at an explicit
 skill root and bypasses scope/agent inference. `--print` previews target paths
 and `SKILL.md` contents. `--force` allows replacement of unmanaged same-name
-skills; without it, user-authored skills are preserved.
+skills; without it, user-authored skills are preserved. Uninstall removes
+ai-memory-managed skills from the default project/global roots after marker
+validation; custom `--target-dir` roots are a manual cleanup path.
 
 This is prompt packaging only. ai-memory does not run a runtime skill router,
 does not store durable memory in `SKILL.md`, and does not turn the

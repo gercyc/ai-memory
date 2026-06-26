@@ -3,7 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ai_memory_core::routing_skills::{MANAGED_MARKER, MANAGED_SKILLS, ManagedSkill};
+use ai_memory_core::routing_skills::{
+    AGENTS_SKILL_DIR, CLAUDE_SKILL_DIR, MANAGED_MARKER, MANAGED_SKILLS, ManagedSkill, SKILLS_DIR,
+};
 use anyhow::{Context, Result, bail};
 
 use crate::cli::{InstallSkillsAgent, InstallSkillsArgs, InstallSkillsScope};
@@ -27,6 +29,11 @@ struct InstallReport {
     outcome: ApplyOutcome,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(super) struct PreparedInstall {
+    plans: Vec<(PathBuf, &'static ManagedSkill)>,
+}
+
 /// Run the `install-skills` subcommand.
 ///
 /// # Errors
@@ -41,7 +48,26 @@ pub fn run(_config: &Config, args: InstallSkillsArgs) -> Result<()> {
         return Ok(());
     }
 
-    for report in install_managed_skills(&roots, args.force)? {
+    let prepared = prepare_install(&args)?;
+    print_reports(apply_prepared_install(prepared)?);
+
+    Ok(())
+}
+
+pub(super) fn prepare_install(args: &InstallSkillsArgs) -> Result<PreparedInstall> {
+    let roots = resolve_target_roots_from_env(args)?;
+    let plans = skill_file_plans(&roots);
+    validate_overwrite_safety(&plans, args.force)?;
+    Ok(PreparedInstall { plans })
+}
+
+pub(super) fn run_prepared(prepared: PreparedInstall) -> Result<()> {
+    print_reports(apply_prepared_install(prepared)?);
+    Ok(())
+}
+
+fn print_reports(reports: Vec<InstallReport>) {
+    for report in reports {
         println!(
             "✓ {} {} ({})",
             report.outcome.verb(),
@@ -49,14 +75,6 @@ pub fn run(_config: &Config, args: InstallSkillsArgs) -> Result<()> {
             outcome_detail(report.outcome),
         );
     }
-
-    Ok(())
-}
-
-pub(super) fn preflight_overwrite_safety(args: &InstallSkillsArgs) -> Result<()> {
-    let roots = resolve_target_roots_from_env(args)?;
-    let plans = skill_file_plans(&roots);
-    validate_overwrite_safety(&plans, args.force)
 }
 
 fn resolve_target_roots_from_env(args: &InstallSkillsArgs) -> Result<Vec<TargetRoot>> {
@@ -109,18 +127,22 @@ fn agent_root(
         }
     };
     let agent_dir = match kind {
-        SkillRootKind::Claude => ".claude",
-        SkillRootKind::Agents => ".agents",
+        SkillRootKind::Claude => CLAUDE_SKILL_DIR,
+        SkillRootKind::Agents => AGENTS_SKILL_DIR,
     };
-    Ok(base.join(agent_dir).join("skills"))
+    Ok(base.join(agent_dir).join(SKILLS_DIR))
 }
 
+#[cfg(test)]
 fn install_managed_skills(roots: &[TargetRoot], force: bool) -> Result<Vec<InstallReport>> {
     let plans = skill_file_plans(roots);
     validate_overwrite_safety(&plans, force)?;
+    apply_prepared_install(PreparedInstall { plans })
+}
 
-    let mut reports = Vec::with_capacity(plans.len());
-    for (path, skill) in plans {
+fn apply_prepared_install(prepared: PreparedInstall) -> Result<Vec<InstallReport>> {
+    let mut reports = Vec::with_capacity(prepared.plans.len());
+    for (path, skill) in prepared.plans {
         let outcome = apply_atomic(&path, |_| Ok(skill.content.to_string()))?;
         reports.push(InstallReport { path, outcome });
     }

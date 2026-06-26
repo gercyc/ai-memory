@@ -238,10 +238,14 @@ should be proposed from a completed session, or at explicit wrap-up \
   pages (idempotent, supports dry-run).\n\
 - `memory_install_self_routing` — when the user asks to 'install \
   ai-memory routing into this project' or 'add ai-memory to \
-  CLAUDE.md / AGENTS.md'. Returns the canonical routing snippet + \
-  filename hints; you then use your own Write/Edit tool to land it \
-  in the right rules file (Claude Code → CLAUDE.md, Codex / \
-  OpenCode / Cursor / Gemini → AGENTS.md).\n\
+  CLAUDE.md / AGENTS.md'. Returns the managed routing package: the \
+  slim markered snippet (`markered_block`), filename hints, \
+  `managed_skills` payloads, `target_hints` for `.claude/skills` or \
+  `.agents/skills`, and overwrite guidance. Use your own Write/Edit \
+  tool to replace only the ai-memory marker block in the rules file, \
+  then write each managed skill under the selected skill root. Only \
+  replace same-name skill files that contain the ai-memory managed \
+  marker unless the human explicitly forces replacement.\n\
 \n\
 **When the current project comes up empty, broaden — don't stop.** \
 `memory_query` searches only ONE project (the current one) by default. \
@@ -271,10 +275,12 @@ deployment, release, auth, scope, migration, PR-review, or \
 data-preservation work, search memory for the subsystem and task type \
 first.\n\
 \n\
-The routing snippet this very text comes from can also be installed \
-into the project's CLAUDE.md / AGENTS.md so the guidance survives \
-across sessions. From the agent: ask 'install ai-memory routing'. \
-From the terminal: `ai-memory install-instructions`.";
+The managed routing package this text points to can also be installed \
+into the project's CLAUDE.md / AGENTS.md plus ai-memory-managed Agent \
+Skills so the guidance survives across sessions. From the agent: ask \
+'install ai-memory routing' and use the returned `managed_skills` + \
+`target_hints`. From the terminal: `ai-memory install-instructions` \
+(or `ai-memory install-skills` to refresh only the skill files).";
 
 /// MCP server backed by the ai-memory store.
 #[derive(Clone)]
@@ -2401,6 +2407,8 @@ fn test_parts_default() -> axum::http::request::Parts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
     use ai_memory_core::{
         ActorContext, AuthLevel, NewObservation, NewPage, NewSession, NewUser, ObservationKind,
         PagePath, Tier,
@@ -2571,19 +2579,35 @@ mod tests {
         let (_tmp, _store, _server, _ws, _pj) = setup_server().await;
     }
 
-    #[test]
-    fn prompts_cover_every_mcp_tool() {
-        for tool in MCP_TOOL_NAMES {
+    #[tokio::test]
+    async fn prompts_cover_every_registered_mcp_tool() {
+        let (_tmp, _store, server, _ws, _pj) = setup_server().await;
+        let actual_tools: BTreeSet<String> = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        let expected_tools: BTreeSet<String> = MCP_TOOL_NAMES
+            .iter()
+            .map(|tool| (*tool).to_string())
+            .collect();
+        assert_eq!(
+            actual_tools, expected_tools,
+            "MCP_TOOL_NAMES must match the registered tool router set"
+        );
+
+        for tool in &actual_tools {
             assert!(
-                MEMORY_INSTRUCTIONS.contains(tool),
+                MEMORY_INSTRUCTIONS.contains(tool.as_str()),
                 "MCP handshake instructions omit {tool}"
             );
         }
 
         let installed = installed_ai_memory_prompt_surface();
-        for tool in MCP_TOOL_NAMES {
+        for tool in &actual_tools {
             assert!(
-                installed.contains(tool),
+                installed.contains(tool.as_str()),
                 "installed snippet and managed skills omit {tool}"
             );
         }
@@ -2715,6 +2739,18 @@ mod tests {
                 );
             }
         });
+        let installed = installed_ai_memory_prompt_surface();
+        assert!(
+            installed.contains("scopes") && installed.contains("global=true"),
+            "installed prompt surface must include exact cross-project broadening args"
+        );
+        assert!(
+            installed.contains("deployment")
+                && installed.contains("PR review")
+                && installed.contains("migration")
+                && installed.contains("data-preservation"),
+            "installed prompt surface must preserve high-risk retrieval preflight guidance"
+        );
     }
 
     #[test]

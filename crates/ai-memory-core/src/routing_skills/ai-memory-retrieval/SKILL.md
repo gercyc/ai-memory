@@ -1,6 +1,6 @@
 ---
 name: ai-memory-retrieval
-description: Use this skill for any request whose goal is read-only retrieval from ai-memory: project history, prior context, decisions, rules, gotchas, recent activity, full wiki pages, or status/briefing. Trigger by semantic intent rather than exact wording, including when ai-memory is not named.
+description: "Use this skill for any request whose goal is read-only retrieval from ai-memory: project history, prior context, decisions, rules, gotchas, recent activity, full wiki pages, or status/briefing. Trigger by semantic intent rather than exact wording, including when ai-memory is not named."
 ---
 <!-- ai-memory-managed: routing-skill -->
 
@@ -24,6 +24,7 @@ Default to the current project. The tools auto-scope from the working directory,
 ## Choose the smallest useful lookup
 
 - Use the search tool when the user asks whether something was discussed, before proposing architecture, or before non-trivial coding in a subsystem with possible prior decisions.
+- Before non-trivial coding, debugging, deployment, release, auth, scope, migration, PR review, or data-preservation work, search memory for the subsystem and task type first. If the first search is thin, broaden or query more specific subsystem/error terms before designing a fix.
 - Use the recent-pages tool for a quick what changed lately view.
 - Use the status tool only for health and size questions.
 - Use the structured briefing when code needs counts, windows, pending-handoff counts, current rules, or recent pages as JSON-like data.
@@ -33,9 +34,9 @@ Default to the current project. The tools auto-scope from the working directory,
 
 If a current-project search is empty or thin, do not conclude the knowledge was never recorded. It may live in a sibling project such as infra, ops, or a related app.
 
-- If the user named the sibling project or you know the likely sibling, search explicit scopes.
-- If you do not know where it lives, search globally across every project.
-- Do not combine global search with explicit scopes or project and workspace arguments.
+- If the user named the sibling project or you know the likely sibling, search explicit `scopes`, for example `scopes: [{ "workspace": "default", "project": "infra" }]`.
+- If you do not know where it lives, search globally across every project with `global=true`.
+- Do not combine `global=true` with `scopes`, `project`, or `workspace` arguments.
 
 ## Snippets are not full pages
 

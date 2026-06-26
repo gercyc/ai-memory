@@ -34,13 +34,21 @@ use ai_memory_core::{MARKER_END, MARKER_START, full_block};
 /// # Errors
 /// Returns an error if the target path can't be written or if the
 /// existing file isn't valid UTF-8.
-pub fn run(config: &Config, args: InstallInstructionsArgs) -> Result<()> {
+pub fn run(_config: &Config, args: InstallInstructionsArgs) -> Result<()> {
     let block = full_block();
     let targets = resolve_targets(args.target.as_ref())?;
     let skill_args = if args.no_skills {
         None
     } else {
         Some(skill_args_from_instruction_args(&args, &targets))
+    };
+    let prepared_skills = if !args.print {
+        skill_args
+            .as_ref()
+            .map(install_skills::prepare_install)
+            .transpose()?
+    } else {
+        None
     };
 
     if args.print {
@@ -49,9 +57,6 @@ pub fn run(config: &Config, args: InstallInstructionsArgs) -> Result<()> {
             println!("{block}");
         }
     } else {
-        if let Some(skill_args) = &skill_args {
-            install_skills::preflight_overwrite_safety(skill_args)?;
-        }
         for target in &targets {
             let outcome = apply_atomic(target, |existing| {
                 Ok(merge_instructions_block(existing, &block))
@@ -69,8 +74,8 @@ pub fn run(config: &Config, args: InstallInstructionsArgs) -> Result<()> {
         }
     }
 
-    if let Some(skill_args) = skill_args {
-        install_skills::run(config, skill_args)?;
+    if let Some(prepared_skills) = prepared_skills {
+        install_skills::run_prepared(prepared_skills)?;
     }
 
     Ok(())

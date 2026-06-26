@@ -106,8 +106,8 @@ pub enum Command {
     /// project that's been around for a while. Requires
     /// AI_MEMORY_LLM_PROVIDER configured on the server.
     Bootstrap(BootstrapArgs),
-    /// Install the ai-memory usage snippet into the project's
-    /// CLAUDE.md / AGENTS.md (or any markdown file you specify).
+    /// Install the ai-memory usage snippet and managed Agent Skills into the
+    /// project (or any markdown file / skill root you specify).
     /// Idempotent — bracketed by `<!-- ai-memory:start -->` /
     /// `<!-- ai-memory:end -->` markers so re-running replaces the
     /// block in place without duplicating.
@@ -135,8 +135,8 @@ pub enum Command {
     /// copy+purge (only durable pages migrate, source purged). Either way the
     /// operation is irreversible — requires `--confirm`.
     MoveProject(MoveProjectArgs),
-    /// Remove ai-memory's wiring (hooks, MCP, instructions) from all
-    /// detected agents. Dry-run unless `--apply`.
+    /// Remove ai-memory's wiring (hooks, MCP, instructions, and default-root
+    /// managed skills) from all detected agents. Dry-run unless `--apply`.
     Uninstall(UninstallArgs),
     /// Manage optional upstream LLM provider authentication.
     Auth(AuthArgs),
@@ -435,11 +435,12 @@ pub struct InstallInstructionsArgs {
     /// to override the auto-detection.
     #[arg(long)]
     pub target: Option<PathBuf>,
-    /// Print the snippet to stdout instead of mutating the file.
+    /// Print the snippet to stdout instead of mutating files.
     /// The default IS mutation here (the print form is also
     /// available without this command — copy the block from the
     /// README). Pass `--print` to preview what would land in
-    /// the file.
+    /// the file. This does not print skill payloads; use
+    /// `install-skills --print` to preview managed Agent Skills.
     #[arg(long)]
     pub print: bool,
     /// Skip installing/updating the managed ai-memory Agent Skills.

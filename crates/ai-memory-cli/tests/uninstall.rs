@@ -552,6 +552,54 @@ fn install_skills_then_uninstall_only_skills_round_trips() {
 }
 
 #[test]
+fn uninstall_only_skills_leaves_custom_target_dir_for_manual_cleanup() {
+    let _guard = cli_test_lock();
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let custom_root = project.path().join("custom-skills");
+
+    let install = Command::new(bin())
+        .args([
+            "install-skills",
+            "--target-dir",
+            custom_root.to_str().unwrap(),
+        ])
+        .current_dir(project.path())
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("XDG_DATA_HOME", home.path().join(".local/share"))
+        .env("AI_MEMORY_DATA_DIR", home.path().join(".ai-memory-data"))
+        .output()
+        .unwrap();
+    assert!(
+        install.status.success(),
+        "install-skills failed: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    let custom_skill = custom_root.join(MANAGED_SKILLS[0].relative_path);
+    assert!(custom_skill.exists());
+
+    let uninstall = run_uninstall(
+        project.path(),
+        home.path(),
+        &["uninstall", "--only", "skills", "--apply", "--yes"],
+    );
+    assert!(
+        uninstall.status.success(),
+        "uninstall failed: {}",
+        String::from_utf8_lossy(&uninstall.stderr)
+    );
+
+    assert!(
+        custom_skill.exists(),
+        "custom --target-dir skill roots are intentionally left for manual cleanup"
+    );
+    assert!(!project.path().join(".claude/skills").exists());
+    assert!(!project.path().join(".agents/skills").exists());
+}
+
+#[test]
 fn uninstall_skills_dry_run_reports_plan_without_mutating() {
     let _guard = cli_test_lock();
     let project = tempfile::tempdir().unwrap();

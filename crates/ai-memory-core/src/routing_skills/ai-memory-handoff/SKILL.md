@@ -1,6 +1,6 @@
 ---
 name: ai-memory-handoff
-description: Use this skill for any request whose goal is session continuity across agents or time: finding a pending handoff, resuming previous work, saving next-session context, wrapping up, or discarding a mistaken handoff. Trigger by semantic intent rather than exact wording.
+description: "Use this skill for any request whose goal is session continuity across agents or time: finding a pending handoff, resuming previous work, saving next-session context, wrapping up, or discarding a mistaken handoff. Trigger by semantic intent rather than exact wording."
 ---
 <!-- ai-memory-managed: routing-skill -->
 
