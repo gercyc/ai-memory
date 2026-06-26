@@ -460,7 +460,11 @@ fn default_uninstall_removes_managed_skills_across_roots_and_preserves_user_cont
     let extra_file_in_managed_dir = managed_paths[1].parent().unwrap().join("notes.txt");
     write_file(&extra_file_in_managed_dir, "keep this sibling file\n");
 
-    let output = run_uninstall(project.path(), home.path(), &["uninstall", "--apply", "--yes"]);
+    let output = run_uninstall(
+        project.path(),
+        home.path(),
+        &["uninstall", "--apply", "--yes"],
+    );
     assert!(
         output.status.success(),
         "uninstall failed: {}",
@@ -468,14 +472,20 @@ fn default_uninstall_removes_managed_skills_across_roots_and_preserves_user_cont
     );
 
     for path in &managed_paths {
-        assert!(!path.exists(), "managed skill file should be removed: {path:?}");
+        assert!(
+            !path.exists(),
+            "managed skill file should be removed: {path:?}"
+        );
     }
     assert_eq!(
         std::fs::read_to_string(&unmanaged_same_name).unwrap(),
         unmanaged_content,
         "unmanaged same-name skill must be preserved"
     );
-    assert!(unrelated_sibling.exists(), "unrelated sibling skill survives");
+    assert!(
+        unrelated_sibling.exists(),
+        "unrelated sibling skill survives"
+    );
     assert!(
         extra_file_in_managed_dir.exists(),
         "non-empty managed skill directory must not be removed"
@@ -553,7 +563,11 @@ fn uninstall_skills_dry_run_reports_plan_without_mutating() {
     let original = managed_skill_content();
     write_file(&skill_path, &original);
 
-    let output = run_uninstall(project.path(), home.path(), &["uninstall", "--only", "skills"]);
+    let output = run_uninstall(
+        project.path(),
+        home.path(),
+        &["uninstall", "--only", "skills"],
+    );
     assert!(
         output.status.success(),
         "dry-run failed: {}",
@@ -561,7 +575,10 @@ fn uninstall_skills_dry_run_reports_plan_without_mutating() {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("would delete"), "stdout was: {stdout}");
-    assert!(stdout.contains("managed Agent Skill"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("managed Agent Skill"),
+        "stdout was: {stdout}"
+    );
     assert!(
         stdout.contains(&skill_path.display().to_string()),
         "stdout was: {stdout}"

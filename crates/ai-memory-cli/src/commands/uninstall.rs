@@ -235,7 +235,6 @@ fn build_plan(args: &UninstallArgs) -> anyhow::Result<Vec<PlannedChange>> {
         }
     }
 
-
     // ---- Managed Agent Skills (project + global roots) ----
     if want(crate::cli::UninstallOnly::Skills) {
         let cwd = std::env::current_dir().context("getting CWD for skill removal")?;

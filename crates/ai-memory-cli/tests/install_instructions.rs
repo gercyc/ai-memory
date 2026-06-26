@@ -76,7 +76,11 @@ fn skill_conflict_preflight_keeps_instruction_file_unchanged_until_force() {
     let updated = fs::read_to_string(&target).unwrap();
     assert!(updated.contains(MARKER_START));
     assert!(updated.contains("# Project"));
-    assert!(fs::read_to_string(&unmanaged).unwrap().contains(MANAGED_MARKER));
+    assert!(
+        fs::read_to_string(&unmanaged)
+            .unwrap()
+            .contains(MANAGED_MARKER)
+    );
     assert!(
         project
             .path()
@@ -90,7 +94,11 @@ fn no_skills_writes_only_instruction_snippet() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
 
-    let output = run_ai_memory(project.path(), home.path(), &["install-instructions", "--no-skills"]);
+    let output = run_ai_memory(
+        project.path(),
+        home.path(),
+        &["install-instructions", "--no-skills"],
+    );
     assert_success(output);
 
     let claude_md = fs::read_to_string(project.path().join("CLAUDE.md")).unwrap();
@@ -105,7 +113,11 @@ fn print_shows_snippet_and_skill_plan_without_mutating() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
 
-    let output = run_ai_memory(project.path(), home.path(), &["install-instructions", "--print"]);
+    let output = run_ai_memory(
+        project.path(),
+        home.path(),
+        &["install-instructions", "--print"],
+    );
     let stdout = assert_success(output);
 
     assert!(stdout.contains("# Would write into:"));
@@ -147,7 +159,12 @@ fn inferred_instruction_targets_select_matching_skill_agents() {
     let output = run_ai_memory(project.path(), home.path(), &["install-instructions"]);
     assert_success(output);
 
-    assert!(project.path().join(".agents/skills/ai-memory-retrieval/SKILL.md").exists());
+    assert!(
+        project
+            .path()
+            .join(".agents/skills/ai-memory-retrieval/SKILL.md")
+            .exists()
+    );
     assert!(!project.path().join(".claude/skills").exists());
 
     let both_project = tempfile::tempdir().unwrap();
@@ -155,11 +172,25 @@ fn inferred_instruction_targets_select_matching_skill_agents() {
     fs::write(both_project.path().join("CLAUDE.md"), "# Claude\n").unwrap();
     fs::write(both_project.path().join("AGENTS.md"), "# Agents\n").unwrap();
 
-    let output = run_ai_memory(both_project.path(), both_home.path(), &["install-instructions"]);
+    let output = run_ai_memory(
+        both_project.path(),
+        both_home.path(),
+        &["install-instructions"],
+    );
     assert_success(output);
 
-    assert!(both_project.path().join(".claude/skills/ai-memory-retrieval/SKILL.md").exists());
-    assert!(both_project.path().join(".agents/skills/ai-memory-retrieval/SKILL.md").exists());
+    assert!(
+        both_project
+            .path()
+            .join(".claude/skills/ai-memory-retrieval/SKILL.md")
+            .exists()
+    );
+    assert!(
+        both_project
+            .path()
+            .join(".agents/skills/ai-memory-retrieval/SKILL.md")
+            .exists()
+    );
 }
 
 #[test]
@@ -182,7 +213,11 @@ fn explicit_skill_scope_and_agent_override_instruction_target_inference() {
     );
     assert_success(output);
 
-    assert!(home.path().join(".claude/skills/ai-memory-retrieval/SKILL.md").exists());
+    assert!(
+        home.path()
+            .join(".claude/skills/ai-memory-retrieval/SKILL.md")
+            .exists()
+    );
     assert!(!home.path().join(".agents/skills").exists());
     assert!(!project.path().join(".claude/skills").exists());
     assert!(!project.path().join(".agents/skills").exists());
@@ -195,7 +230,11 @@ fn explicit_skill_overrides_win_over_instruction_target_inference() {
     let custom_root = project.path().join("custom-skills");
     let unmanaged = custom_root.join("ai-memory-retrieval/SKILL.md");
     fs::create_dir_all(unmanaged.parent().unwrap()).unwrap();
-    fs::write(&unmanaged, "---\nname: ai-memory-retrieval\n---\nuser skill\n").unwrap();
+    fs::write(
+        &unmanaged,
+        "---\nname: ai-memory-retrieval\n---\nuser skill\n",
+    )
+    .unwrap();
 
     let custom_root_arg = custom_root.to_str().unwrap();
     let output = run_ai_memory(
@@ -234,7 +273,11 @@ fn legacy_long_marker_block_rerun_upgrades_in_place_to_slim_snippet() {
     );
     fs::write(project.path().join("CLAUDE.md"), original).unwrap();
 
-    let output = run_ai_memory(project.path(), home.path(), &["install-instructions", "--no-skills"]);
+    let output = run_ai_memory(
+        project.path(),
+        home.path(),
+        &["install-instructions", "--no-skills"],
+    );
     assert_success(output);
 
     let updated = fs::read_to_string(project.path().join("CLAUDE.md")).unwrap();
@@ -243,6 +286,12 @@ fn legacy_long_marker_block_rerun_upgrades_in_place_to_slim_snippet() {
     assert!(updated.contains("Use the installed ai-memory Agent Skills"));
     assert!(!updated.contains("When to reach for each tool"));
     assert!(!updated.contains("|User says / situation|Tool|"));
-    assert_eq!(updated.lines().filter(|line| *line == MARKER_START).count(), 1);
-    assert_eq!(updated.lines().filter(|line| *line == MARKER_END).count(), 1);
+    assert_eq!(
+        updated.lines().filter(|line| *line == MARKER_START).count(),
+        1
+    );
+    assert_eq!(
+        updated.lines().filter(|line| *line == MARKER_END).count(),
+        1
+    );
 }

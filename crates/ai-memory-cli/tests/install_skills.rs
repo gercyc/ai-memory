@@ -27,7 +27,17 @@ fn install_skills_print_outputs_plan_without_mutating_target_dir() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains(&target.join("ai-memory-retrieval/SKILL.md").display().to_string()));
+    assert!(
+        stdout.contains(
+            &target
+                .join("ai-memory-retrieval/SKILL.md")
+                .display()
+                .to_string()
+        )
+    );
     assert!(stdout.contains("<!-- ai-memory-managed: routing-skill -->"));
-    assert!(!target.exists(), "--print must not create the target directory");
+    assert!(
+        !target.exists(),
+        "--print must not create the target directory"
+    );
 }

@@ -2135,7 +2135,8 @@ impl AiMemoryServer {
     /// agent can land it via its own Write/Edit tool. No server-side
     /// state changes — the server can't reach the agent's host
     /// filesystem.
-    #[tool(description = "Returns the canonical ai-memory routing install payload: \
+    #[tool(
+        description = "Returns the canonical ai-memory routing install payload: \
         `markered_block` for the slim CLAUDE.md / AGENTS.md snippet, \
         `agent_filenames` for rules-file targets, `managed_skills` for \
         Agent Skill files, and `target_hints` for project/global \
@@ -2149,7 +2150,8 @@ impl AiMemoryServer {
         read-only and is the source of truth for the snippet and skills. \
         Skill files are ai-memory-managed only when they contain the \
         managed marker; do not overwrite unmanaged same-name skills unless \
-        the human explicitly forces replacement.")]
+        the human explicitly forces replacement."
+    )]
     async fn memory_install_self_routing(&self) -> Result<CallToolResult, McpError> {
         let managed_skills: Vec<_> = ai_memory_core::routing_skills::MANAGED_SKILLS
             .iter()
@@ -2460,7 +2462,10 @@ mod tests {
     fn assert_detailed_prompt_surfaces(mut assert_prompt: impl FnMut(&str, &str)) {
         assert_prompt("MCP handshake instructions", MEMORY_INSTRUCTIONS);
         let combined = combined_ai_memory_prompt_surface();
-        assert_prompt("combined MCP, snippet, and managed skill prompts", &combined);
+        assert_prompt(
+            "combined MCP, snippet, and managed skill prompts",
+            &combined,
+        );
     }
 
     fn call_tool_json(result: CallToolResult) -> serde_json::Value {
@@ -2712,7 +2717,6 @@ mod tests {
         });
     }
 
-
     #[test]
     fn prompts_route_permanent_annotations_to_write_page_not_handoff() {
         assert_detailed_prompt_surfaces(|label, prompt| {
@@ -2796,7 +2800,10 @@ mod tests {
                 .find(|skill| skill["name"].as_str() == Some(expected.name))
                 .unwrap_or_else(|| panic!("missing managed skill {}", expected.name));
             assert_eq!(skill["description"].as_str().unwrap(), expected.description);
-            assert_eq!(skill["relative_path"].as_str().unwrap(), expected.relative_path);
+            assert_eq!(
+                skill["relative_path"].as_str().unwrap(),
+                expected.relative_path
+            );
             assert_eq!(skill["content"].as_str().unwrap(), expected.content);
             assert!(
                 skill["content"]

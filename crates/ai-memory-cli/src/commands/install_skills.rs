@@ -75,8 +75,12 @@ fn resolve_target_roots(
     }
 
     let roots = match args.agent {
-        InstallSkillsAgent::ClaudeCode => vec![agent_root(args.scope, SkillRootKind::Claude, cwd, home)?],
-        InstallSkillsAgent::Agents => vec![agent_root(args.scope, SkillRootKind::Agents, cwd, home)?],
+        InstallSkillsAgent::ClaudeCode => {
+            vec![agent_root(args.scope, SkillRootKind::Claude, cwd, home)?]
+        }
+        InstallSkillsAgent::Agents => {
+            vec![agent_root(args.scope, SkillRootKind::Agents, cwd, home)?]
+        }
         InstallSkillsAgent::Both => vec![
             agent_root(args.scope, SkillRootKind::Claude, cwd, home)?,
             agent_root(args.scope, SkillRootKind::Agents, cwd, home)?,
@@ -100,7 +104,9 @@ fn agent_root(
 ) -> Result<PathBuf> {
     let base = match scope {
         InstallSkillsScope::Project => cwd,
-        InstallSkillsScope::Global => home.context("could not locate $HOME for global skill install")?,
+        InstallSkillsScope::Global => {
+            home.context("could not locate $HOME for global skill install")?
+        }
     };
     let agent_dir = match kind {
         SkillRootKind::Claude => ".claude",
@@ -327,6 +333,10 @@ mod tests {
             .find(|report| report.path == unmanaged)
             .expect("retrieval report");
         assert_eq!(overwritten.outcome, ApplyOutcome::Updated);
-        assert!(fs::read_to_string(unmanaged).unwrap().contains(MANAGED_MARKER));
+        assert!(
+            fs::read_to_string(unmanaged)
+                .unwrap()
+                .contains(MANAGED_MARKER)
+        );
     }
 }
