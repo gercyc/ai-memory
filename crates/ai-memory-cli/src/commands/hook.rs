@@ -327,6 +327,41 @@ mod tests {
     }
 
     #[test]
+    fn session_end_note_is_silent_when_nothing_deferred() {
+        // A fully-drained boundary (the normal case) must stay quiet so a light
+        // session never prints a spurious warning.
+        let clean = hook_spool::DrainResult {
+            sent: 12,
+            remaining: 0,
+            dropped: 0,
+        };
+        assert!(session_end_deferred_note(&clean).is_none());
+    }
+
+    #[test]
+    fn session_end_note_reports_deferred_backlog_and_knobs() {
+        // The heavy-session condition from issue #130: a budget-bounded flush
+        // delivers some events and defers the rest. The note must report both
+        // counts and name the two knobs the issue's own workaround used.
+        let backlog = hook_spool::DrainResult {
+            sent: 500,
+            remaining: 1384,
+            dropped: 0,
+        };
+        let note = session_end_deferred_note(&backlog).expect("a backlog must produce a note");
+        assert!(note.contains("500"), "reports how many were flushed");
+        assert!(note.contains("1384"), "reports how many were deferred");
+        assert!(
+            note.contains(END_BUDGET_ENV),
+            "points at the session-end budget knob"
+        );
+        assert!(
+            note.contains(INCREMENTAL_THRESHOLD_ENV),
+            "points at the mid-session threshold knob"
+        );
+    }
+
+    #[test]
     fn parse_minutes_falls_back_on_invalid() {
         assert_eq!(
             parse_minutes(None, DEFAULT_DRAIN_TIMEOUT),
