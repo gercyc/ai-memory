@@ -1,0 +1,203 @@
+//! Canonical managed ai-memory Agent Skill assets.
+//!
+//! The installer-facing crates consume these definitions so every path that
+//! writes ai-memory routing skills uses the same metadata and `SKILL.md` bytes.
+
+/// Stable ownership marker embedded in every managed ai-memory skill file.
+pub const MANAGED_MARKER: &str = "<!-- ai-memory-managed: routing-skill -->";
+
+const RETRIEVAL_DESCRIPTION: &str = "Use when the user asks to search memory, catch up, inspect recent activity, read wiki pages, get ai-memory stats, query prior decisions, or apply remembered rules before design or debugging.";
+const HANDOFF_DESCRIPTION: &str = "Use when the user asks where we left off, whether there is a pending handoff, to save context for the next session, to end or wrap up a session, or to discard a mistaken handoff.";
+const DURABLE_PAGES_DESCRIPTION: &str = "Use when the user explicitly asks to remember something permanently, save a durable project note, add an annotation, create a wiki page, delete a memory page, or record a project rule.";
+const LEARNING_MAINTENANCE_DESCRIPTION: &str = "Use when the user asks to consolidate memory, review what was learned, propose durable lessons, audit the wiki, find contradictions, prune old memory, or run auto-improvement maintenance.";
+const ROUTING_INSTALL_DESCRIPTION: &str = "Use when the user asks to install, refresh, update, repair, or remove ai-memory routing instructions or Agent Skills in CLAUDE.md, AGENTS.md, .claude/skills, or .agents/skills.";
+
+/// One ai-memory-managed Agent Skill file bundled by the core crate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagedSkill {
+    /// Skill directory name and frontmatter `name` value.
+    pub name: &'static str,
+    /// Trigger-rich frontmatter `description` value.
+    pub description: &'static str,
+    /// File path relative to an agent skill root.
+    pub relative_path: &'static str,
+    /// Complete `SKILL.md` contents.
+    pub content: &'static str,
+}
+
+/// Canonical managed ai-memory routing skills.
+pub const MANAGED_SKILLS: &[ManagedSkill] = &[
+    ManagedSkill {
+        name: "ai-memory-retrieval",
+        description: RETRIEVAL_DESCRIPTION,
+        relative_path: "ai-memory-retrieval/SKILL.md",
+        content: include_str!("routing_skills/ai-memory-retrieval/SKILL.md"),
+    },
+    ManagedSkill {
+        name: "ai-memory-handoff",
+        description: HANDOFF_DESCRIPTION,
+        relative_path: "ai-memory-handoff/SKILL.md",
+        content: include_str!("routing_skills/ai-memory-handoff/SKILL.md"),
+    },
+    ManagedSkill {
+        name: "ai-memory-durable-pages",
+        description: DURABLE_PAGES_DESCRIPTION,
+        relative_path: "ai-memory-durable-pages/SKILL.md",
+        content: include_str!("routing_skills/ai-memory-durable-pages/SKILL.md"),
+    },
+    ManagedSkill {
+        name: "ai-memory-learning-maintenance",
+        description: LEARNING_MAINTENANCE_DESCRIPTION,
+        relative_path: "ai-memory-learning-maintenance/SKILL.md",
+        content: include_str!("routing_skills/ai-memory-learning-maintenance/SKILL.md"),
+    },
+    ManagedSkill {
+        name: "ai-memory-routing-install",
+        description: ROUTING_INSTALL_DESCRIPTION,
+        relative_path: "ai-memory-routing-install/SKILL.md",
+        content: include_str!("routing_skills/ai-memory-routing-install/SKILL.md"),
+    },
+];
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{MANAGED_MARKER, MANAGED_SKILLS, ManagedSkill};
+
+    const EXPECTED_SKILLS: &[&str] = &[
+        "ai-memory-retrieval",
+        "ai-memory-handoff",
+        "ai-memory-durable-pages",
+        "ai-memory-learning-maintenance",
+        "ai-memory-routing-install",
+    ];
+
+    const EXPECTED_TOOL_CLUSTERS: &[(&str, &str)] = &[
+        ("memory_query", "ai-memory-retrieval"),
+        ("memory_recent", "ai-memory-retrieval"),
+        ("memory_read_page", "ai-memory-retrieval"),
+        ("memory_status", "ai-memory-retrieval"),
+        ("memory_briefing", "ai-memory-retrieval"),
+        ("memory_explore", "ai-memory-retrieval"),
+        ("memory_handoff_accept", "ai-memory-handoff"),
+        ("memory_handoff_begin", "ai-memory-handoff"),
+        ("memory_handoff_cancel", "ai-memory-handoff"),
+        ("memory_write_page", "ai-memory-durable-pages"),
+        ("memory_delete_page", "ai-memory-durable-pages"),
+        ("memory_consolidate", "ai-memory-learning-maintenance"),
+        ("memory_auto_improve", "ai-memory-learning-maintenance"),
+        ("memory_lint", "ai-memory-learning-maintenance"),
+        ("memory_forget_sweep", "ai-memory-learning-maintenance"),
+        ("memory_install_self_routing", "ai-memory-routing-install"),
+    ];
+
+    #[derive(Debug)]
+    struct Frontmatter<'a> {
+        name: &'a str,
+        description: &'a str,
+    }
+
+    #[test]
+    fn exposes_exact_managed_skill_set() {
+        let names: Vec<_> = MANAGED_SKILLS.iter().map(|skill| skill.name).collect();
+        assert_eq!(names, EXPECTED_SKILLS);
+    }
+
+    #[test]
+    fn skill_frontmatter_is_valid_and_matches_metadata() {
+        for skill in MANAGED_SKILLS {
+            let frontmatter = parse_frontmatter(skill);
+            assert_eq!(frontmatter.name, skill.name);
+            assert_eq!(frontmatter.description, skill.description);
+            assert_eq!(frontmatter.name, directory_name(skill));
+            assert!(!frontmatter.description.trim().is_empty());
+            assert!(
+                frontmatter.description.chars().count() <= 1024,
+                "{} description is over the Agent Skills limit",
+                skill.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_skill_has_managed_marker() {
+        assert!(!MANAGED_MARKER.is_empty());
+        for skill in MANAGED_SKILLS {
+            assert!(
+                skill.content.contains(MANAGED_MARKER),
+                "{} is missing the managed ownership marker",
+                skill.name
+            );
+        }
+    }
+
+    #[test]
+    fn relative_paths_are_skill_markdown_files() {
+        for skill in MANAGED_SKILLS {
+            let expected_suffix = format!("{}/SKILL.md", skill.name);
+            assert_eq!(skill.relative_path, expected_suffix);
+        }
+    }
+
+    #[test]
+    fn every_routing_tool_appears_only_in_its_intended_cluster() {
+        let expected_by_tool: BTreeMap<_, _> = EXPECTED_TOOL_CLUSTERS.iter().copied().collect();
+        assert_eq!(expected_by_tool.len(), EXPECTED_TOOL_CLUSTERS.len());
+
+        for (tool, expected_skill) in expected_by_tool {
+            let containing_skills: Vec<_> = MANAGED_SKILLS
+                .iter()
+                .filter(|skill| skill.content.contains(tool))
+                .map(|skill| skill.name)
+                .collect();
+
+            assert_eq!(
+                containing_skills,
+                vec![expected_skill],
+                "{tool} should appear in exactly one intended skill"
+            );
+        }
+    }
+
+    fn parse_frontmatter(skill: &ManagedSkill) -> Frontmatter<'_> {
+        let mut lines = skill.content.lines();
+        assert_eq!(
+            lines.next(),
+            Some("---"),
+            "{} must start with frontmatter",
+            skill.name
+        );
+
+        let mut name = None;
+        let mut description = None;
+        let mut closed = false;
+        for line in lines.by_ref() {
+            if line == "---" {
+                closed = true;
+                break;
+            }
+
+            if let Some(value) = line.strip_prefix("name: ") {
+                name = Some(value.trim());
+            } else if let Some(value) = line.strip_prefix("description: ") {
+                description = Some(value.trim());
+            }
+        }
+        assert!(closed, "{} must close frontmatter", skill.name);
+
+        Frontmatter {
+            name: name.unwrap_or_else(|| panic!("{} is missing frontmatter name", skill.name)),
+            description: description
+                .unwrap_or_else(|| panic!("{} is missing frontmatter description", skill.name)),
+        }
+    }
+
+    fn directory_name(skill: &ManagedSkill) -> &str {
+        skill
+            .relative_path
+            .split('/')
+            .next()
+            .unwrap_or_else(|| panic!("{} has an empty relative path", skill.name))
+    }
+}

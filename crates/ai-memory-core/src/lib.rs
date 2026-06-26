@@ -12,6 +12,7 @@ pub mod handoff;
 pub mod ids;
 pub mod observation;
 pub mod page;
+pub mod routing_skills;
 pub mod routing_snippet;
 pub mod sanitize;
 pub mod user;
