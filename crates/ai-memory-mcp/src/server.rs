@@ -2135,22 +2135,33 @@ impl AiMemoryServer {
     /// agent can land it via its own Write/Edit tool. No server-side
     /// state changes — the server can't reach the agent's host
     /// filesystem.
-    #[tool(description = "Returns the canonical ai-memory routing snippet \
-        (the markdown block that tells the agent WHEN to call \
-        memory_query / memory_recent / memory_handoff_accept / etc.) \
-        plus filename hints per agent. Use when the user asks 'install \
-        ai-memory routing in this project' or 'add ai-memory to \
-        CLAUDE.md'. After calling, use your Write/Edit tool to: (a) \
-        pick the right rules file for yourself — Claude Code → \
-        CLAUDE.md, Codex / OpenCode / Cursor / Gemini CLI → AGENTS.md \
-        (or check `agent_filenames` in the response); (b) if the file \
-        already has a block bracketed by `<!-- ai-memory:start -->` / \
-        `<!-- ai-memory:end -->`, replace that block in place; \
-        otherwise append `markered_block` to the file with one blank \
-        line of separation. The block IS idempotent — re-runs replace \
-        in place. This tool is the source of truth for the snippet; \
-        do NOT improvise the routing table from memory.")]
+    #[tool(description = "Returns the canonical ai-memory routing install payload: \
+        `markered_block` for the slim CLAUDE.md / AGENTS.md snippet, \
+        `agent_filenames` for rules-file targets, `managed_skills` for \
+        Agent Skill files, and `target_hints` for project/global \
+        `.claude/skills` and `.agents/skills` roots. Use when the user \
+        asks to install or refresh ai-memory routing in this project. \
+        After calling, use your Write/Edit tool to preserve non-ai-memory \
+        user content: replace only an existing `<!-- ai-memory:start -->` \
+        / `<!-- ai-memory:end -->` block or append `markered_block` with \
+        one blank line, then write every `managed_skills` item beneath \
+        the chosen skill root using its `relative_path`. This tool is \
+        read-only and is the source of truth for the snippet and skills. \
+        Skill files are ai-memory-managed only when they contain the \
+        managed marker; do not overwrite unmanaged same-name skills unless \
+        the human explicitly forces replacement.")]
     async fn memory_install_self_routing(&self) -> Result<CallToolResult, McpError> {
+        let managed_skills: Vec<_> = ai_memory_core::routing_skills::MANAGED_SKILLS
+            .iter()
+            .map(|skill| {
+                serde_json::json!({
+                    "name": skill.name,
+                    "description": skill.description,
+                    "relative_path": skill.relative_path,
+                    "content": skill.content,
+                })
+            })
+            .collect();
         let response = serde_json::json!({
             "markered_block": ai_memory_core::full_block(),
             "marker_start": ai_memory_core::MARKER_START,
@@ -2164,11 +2175,29 @@ impl AiMemoryServer {
                 "antigravity_cli": "AGENTS.md",
                 "default": "AGENTS.md"
             },
+            "managed_skills": managed_skills,
+            "target_hints": {
+                "project": {
+                    "claude_code": ".claude/skills",
+                    "agents": ".agents/skills"
+                },
+                "global": {
+                    "claude_code": "~/.claude/skills",
+                    "agents": "~/.agents/skills"
+                }
+            },
+            "overwrite_guidance": {
+                "managed_marker": ai_memory_core::routing_skills::MANAGED_MARKER,
+                "safe_update": "Existing same-name skill files containing the managed marker may be replaced with the managed payload.",
+                "unsafe_update": "Unmanaged same-name skills must not be overwritten unless the human explicitly forces replacement."
+            },
             "notes": [
                 "Pick the filename matching your own agent identity.",
                 "If the target file already contains <!-- ai-memory:start --> / <!-- ai-memory:end -->, replace ONLY that block in place; preserve every other line.",
                 "If the file doesn't exist, create it with just the markered_block (plus a trailing newline).",
-                "If the file exists but has no ai-memory markers, append the markered_block with one blank line of separation from existing content."
+                "If the file exists but has no ai-memory markers, append the markered_block with one blank line of separation from existing content.",
+                "Install each managed_skills item under the selected skill root from target_hints using its relative_path, for example .claude/skills/<relative_path> or .agents/skills/<relative_path>.",
+                "Existing skill files containing the managed marker <!-- ai-memory-managed: routing-skill --> may be replaced; unmanaged same-name skills must not be overwritten unless the human explicitly forces replacement."
             ]
         });
         ok_json(&response)
@@ -2432,6 +2461,16 @@ mod tests {
         assert_prompt("MCP handshake instructions", MEMORY_INSTRUCTIONS);
         let combined = combined_ai_memory_prompt_surface();
         assert_prompt("combined MCP, snippet, and managed skill prompts", &combined);
+    }
+
+    fn call_tool_json(result: CallToolResult) -> serde_json::Value {
+        let text = result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.as_str())
+            .unwrap_or_else(|| panic!("expected text content"));
+        serde_json::from_str(text).unwrap_or_else(|e| panic!("invalid JSON response: {e}\n{text}"))
     }
 
     const MCP_TOOL_NAMES: &[&str] = &[
@@ -2706,6 +2745,127 @@ mod tests {
             );
         });
     }
+
+    #[tokio::test]
+    async fn memory_install_self_routing_response_includes_managed_skills_and_targets() {
+        let (_tmp, _store, server, _ws, _pj) = setup_server().await;
+
+        let response = call_tool_json(server.memory_install_self_routing().await.unwrap());
+
+        assert_eq!(
+            response["markered_block"].as_str().unwrap(),
+            ai_memory_core::full_block()
+        );
+        assert_eq!(
+            response["marker_start"].as_str().unwrap(),
+            ai_memory_core::MARKER_START
+        );
+        assert_eq!(
+            response["marker_end"].as_str().unwrap(),
+            ai_memory_core::MARKER_END
+        );
+        assert_eq!(
+            response["agent_filenames"]["claude_code"].as_str().unwrap(),
+            "CLAUDE.md"
+        );
+        assert_eq!(
+            response["agent_filenames"]["default"].as_str().unwrap(),
+            "AGENTS.md"
+        );
+
+        let managed_skills = response["managed_skills"]
+            .as_array()
+            .expect("managed_skills must be an array");
+        assert_eq!(
+            managed_skills.len(),
+            ai_memory_core::routing_skills::MANAGED_SKILLS.len()
+        );
+        for expected in ai_memory_core::routing_skills::MANAGED_SKILLS {
+            let skill = managed_skills
+                .iter()
+                .find(|skill| skill["name"].as_str() == Some(expected.name))
+                .unwrap_or_else(|| panic!("missing managed skill {}", expected.name));
+            assert_eq!(skill["description"].as_str().unwrap(), expected.description);
+            assert_eq!(skill["relative_path"].as_str().unwrap(), expected.relative_path);
+            assert_eq!(skill["content"].as_str().unwrap(), expected.content);
+            assert!(
+                skill["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains(ai_memory_core::routing_skills::MANAGED_MARKER),
+                "managed skill {} must include the ownership marker",
+                expected.name
+            );
+        }
+
+        assert_eq!(
+            response["target_hints"]["project"]["claude_code"]
+                .as_str()
+                .unwrap(),
+            ".claude/skills"
+        );
+        assert_eq!(
+            response["target_hints"]["project"]["agents"]
+                .as_str()
+                .unwrap(),
+            ".agents/skills"
+        );
+        assert_eq!(
+            response["target_hints"]["global"]["claude_code"]
+                .as_str()
+                .unwrap(),
+            "~/.claude/skills"
+        );
+        assert_eq!(
+            response["target_hints"]["global"]["agents"]
+                .as_str()
+                .unwrap(),
+            "~/.agents/skills"
+        );
+
+        let notes = response["notes"]
+            .as_array()
+            .expect("notes must remain an array")
+            .iter()
+            .map(|note| note.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(notes.contains(ai_memory_core::routing_skills::MANAGED_MARKER));
+        assert!(notes.contains("unmanaged same-name skills"));
+        assert!(notes.contains("explicitly forces replacement"));
+    }
+
+    #[tokio::test]
+    async fn memory_install_self_routing_tool_description_covers_snippet_and_skills() {
+        let (_tmp, _store, server, _ws, _pj) = setup_server().await;
+        let tools = server.tool_router.list_all();
+        let install = tools
+            .iter()
+            .find(|tool| tool.name == "memory_install_self_routing")
+            .expect("memory_install_self_routing must be registered");
+        let desc = install
+            .description
+            .as_deref()
+            .expect("memory_install_self_routing must carry a description");
+
+        assert!(
+            desc.contains("markered_block") && desc.contains("managed_skills"),
+            "tool description must tell agents to install snippet and skill payloads; got: {desc}"
+        );
+        assert!(
+            desc.contains(".claude/skills") && desc.contains(".agents/skills"),
+            "tool description must name Claude and .agents skill targets; got: {desc}"
+        );
+        assert!(
+            desc.contains("preserve non-ai-memory user content"),
+            "tool description must preserve user content; got: {desc}"
+        );
+        assert!(
+            desc.contains("unmanaged same-name skills") && desc.contains("explicitly forces"),
+            "tool description must mention safe overwrite behavior; got: {desc}"
+        );
+    }
+
     #[tokio::test]
     async fn prompts_expose_auto_improve_as_auto_approval_with_manual_opt_in() {
         assert_detailed_prompt_surfaces(|label, prompt| {
