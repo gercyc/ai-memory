@@ -22,8 +22,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ai_memory_llm::{OidcToken, refresh_access_token};
-use secrecy::ExposeSecret as _;
 use serde::{Deserialize, Serialize};
 
 use super::hook_capture::{BatchOutcome, PostOutcome, build_client, post_batch, post_hook};
@@ -441,7 +439,9 @@ async fn entry_bearer(
         AuthMode::Anonymous => None,
         AuthMode::Oidc => {
             if oidc_cache.is_none() {
-                *oidc_cache = Some(resolve_oidc(client, data_dir).await);
+                *oidc_cache = Some(
+                    crate::auth_bearer::resolve_oidc(client, &data_dir.join("auth.json")).await,
+                );
             }
             oidc_cache.clone().flatten()
         }
@@ -526,25 +526,7 @@ pub async fn resolve_bearer(
     data_dir: &Path,
     auth_token: Option<&str>,
 ) -> Option<String> {
-    match auth_token {
-        Some(t) => Some(t.to_string()),
-        None => resolve_oidc(client, data_dir).await,
-    }
-}
-
-/// Load the stored OIDC token, refreshing (and persisting) it when stale.
-/// Returns the access token, or None when there's no token / refresh failed.
-async fn resolve_oidc(client: &reqwest::Client, data_dir: &Path) -> Option<String> {
-    let auth_path = data_dir.join("auth.json");
-    let mut token = OidcToken::load(&auth_path).ok().flatten()?;
-    if token.needs_refresh() {
-        let Ok(refreshed) = refresh_access_token(client, &token).await else {
-            return None;
-        };
-        let _ = refreshed.save(&auth_path);
-        token = refreshed;
-    }
-    Some(token.access.expose_secret().to_string())
+    crate::auth_bearer::resolve_bearer(client, &data_dir.join("auth.json"), auth_token).await
 }
 
 fn prune_spool_file_count(spool: &Path) {
@@ -599,6 +581,18 @@ mod tests {
 
         let a = entry_for("u".into(), "{}".into(), None, false);
         assert_eq!(a.auth_mode, AuthMode::Anonymous);
+    }
+
+    #[tokio::test]
+    async fn resolve_bearer_delegates_static_and_absent_oidc_semantics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let client = reqwest::Client::new();
+
+        let static_bearer = resolve_bearer(&client, tmp.path(), Some("static-token")).await;
+        let absent_bearer = resolve_bearer(&client, tmp.path(), None).await;
+
+        assert_eq!(static_bearer.as_deref(), Some("static-token"));
+        assert!(absent_bearer.is_none());
     }
 
     #[test]
