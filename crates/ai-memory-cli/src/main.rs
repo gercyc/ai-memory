@@ -41,6 +41,7 @@ async fn main() -> Result<()> {
     // the bare path rather than loading the full config.
     let command = match command {
         Command::Hook(args) => return commands::hook::run(data_dir, args).await,
+        Command::HookDrain(_args) => return commands::hook::run_drain(data_dir).await,
         other => other,
     };
 
@@ -72,6 +73,8 @@ async fn main() -> Result<()> {
         Command::InstallHooks(args) => commands::install_hooks::run(&config, args),
         // `Hook` is handled in the fast-path above (before config/tracing).
         Command::Hook(args) => commands::hook::run(Some(config.data_dir.clone()), args).await,
+        // `HookDrain` is handled in the fast-path above (before config/tracing).
+        Command::HookDrain(_args) => commands::hook::run_drain(Some(config.data_dir.clone())).await,
         Command::InstallMcp(args) => commands::install_mcp::run(&config, args),
         Command::Commit(args) => commands::commit::run(&config, args).await,
         Command::Checkpoints(args) => commands::checkpoints::run(&config, args).await,

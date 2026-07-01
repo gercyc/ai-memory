@@ -232,8 +232,10 @@ boundary before startup healing or cwd-prefix matching.
 
 ### Tuning the spool timings (high-latency instances)
 
-The native hook spools events locally and drains them to the server at session
-boundaries. The built-in timings stay short by default, but high-latency or
+The native hook spools events locally. Session start does a short bounded cleanup
+drain before fetching a handoff; session end starts a detached `hook-drain`
+helper so Claude Code and other agents are not kept open by a large backlog. The
+built-in timings stay short on agent-facing paths, but high-latency or
 large-backlog instances can raise them with whole-minute overrides. Unlike
 `AI_MEMORY_HOOK_PLATFORM`, these are read by the hook **at runtime**, so they
 apply to the agent's environment (no re-`install-hooks` needed):
@@ -242,15 +244,16 @@ apply to the agent's environment (no re-`install-hooks` needed):
 |---|---:|---:|---|
 | `AI_MEMORY_HOOK_DRAIN_TIMEOUT_MINUTES` | 3 seconds | 60 minutes | each event POST during a drain |
 | `AI_MEMORY_HOOK_HANDOFF_TIMEOUT_MINUTES` | 3 seconds | 60 minutes | the synchronous `session-start` handoff GET |
-| `AI_MEMORY_HOOK_START_BUDGET_MINUTES` | 3 seconds | 60 minutes | total time the `session-start` cleanup drain may spend |
-| `AI_MEMORY_HOOK_END_BUDGET_MINUTES` | 10 seconds | 60 minutes | total time the `session-end` flush may spend |
+| `AI_MEMORY_HOOK_START_BUDGET_MINUTES` | 3 seconds | 60 minutes | total time `session-start` may spend waiting for the drain lock and cleanup draining |
+| `AI_MEMORY_HOOK_BACKGROUND_DRAIN_BUDGET_MINUTES` | 5 minutes | 60 minutes | total time the detached `hook-drain` helper may spend after `session-end` |
 | `AI_MEMORY_HOOK_INCREMENTAL_THRESHOLD` | 32 events | positive integer | spool backlog size that triggers a 250 ms `post-tool-use` catch-up drain |
 
 Timing values must be positive whole minutes. Missing, empty, non-numeric, or
 zero values fall back to the built-in defaults; values above 60 are clamped. The
 incremental threshold is a positive event count; invalid values fall back to 32.
-The budgets cap how long a session boundary blocks, so leave headroom over the
-per-request timeout for several events to drain per boundary.
+The session-start budget caps how long the hook may block before handoff fetch;
+the background budget caps detached cleanup after session-end and does not keep
+the agent waiting.
 
 ## Current Harness Caveats
 

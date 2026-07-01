@@ -46,8 +46,10 @@ from hook paths.
 1. Agent CLI emits a lifecycle hook (SessionStart, UserPromptSubmit,
    PostToolUse, …). Shell-script hooks `curl` event JSON to `POST /hook`
    with a short timeout. Native `ai-memory hook --event ...` commands spool
-   events locally and drain them at session boundaries; high-latency
-   operators can raise the drain/handoff caps with minute-based env vars.
+   events locally, do a short bounded cleanup at session start, and hand
+   session-end delivery to a detached lock-aware `hook-drain` helper;
+   high-latency operators can raise the drain/handoff/background caps with
+   minute-based env vars.
    Agent hot paths never block on the network; saturated servers return HTTP
    429 instead of queueing unbounded work.
 2. Server's hook router sanitises the payload (the only path from

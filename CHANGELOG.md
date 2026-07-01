@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Native `session-end` hooks now enqueue and return quickly, then drain the hook
+  spool through a hidden detached `hook-drain` process guarded by a real
+  single-flight file lock. Background drains use the new bounded
+  `AI_MEMORY_HOOK_BACKGROUND_DRAIN_BUDGET_MINUTES` setting (default 5, max 60),
+  while `session-start` cleanup remains synchronous and uses one shared
+  `AI_MEMORY_HOOK_START_BUDGET_MINUTES` budget for lock wait plus cleanup drain.
+  This supersedes the previous inline `session-end` deferred-drain note and
+  `AI_MEMORY_HOOK_END_BUDGET_MINUTES` session-end flush budget.
 - Pi is now supported through a generated `~/.pi/agent/extensions/ai-memory.ts`
   TypeScript extension that combines lifecycle capture with an HTTP MCP bridge;
   `install-hooks --agent pi --apply` writes it, while `install-mcp --client pi`

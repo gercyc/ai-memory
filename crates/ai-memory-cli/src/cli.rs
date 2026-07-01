@@ -67,6 +67,9 @@ pub enum Command {
     /// from stdin), avoiding a shell spawn. Used by the WindowsNative
     /// hook config; mirrors hooks/<agent>/<event>.sh.
     Hook(HookArgs),
+    /// Hidden hook spool drainer used by native session-end hooks.
+    #[command(hide = true, name = "hook-drain")]
+    HookDrain(HookDrainArgs),
     /// Print MCP server registration snippets for any supported client
     /// (Claude Code, Codex, OpenCode, Cursor, Claude Desktop, Gemini
     /// CLI, OpenClaw, OMP, Pi). See docs/mcp-install.md for the full guide.
@@ -1150,6 +1153,10 @@ pub struct HookArgs {
     #[arg(long, value_enum)]
     pub project_strategy: Option<ProjectStrategyArg>,
 }
+
+/// Arguments for hidden `hook-drain`.
+#[derive(Debug, Args)]
+pub struct HookDrainArgs {}
 
 /// Arguments for `install-hooks`.
 #[derive(Debug, Args)]

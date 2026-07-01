@@ -124,9 +124,9 @@ Apple Silicon pulls the native arm64 image without `--platform linux/amd64`.
 two relevant values are `posix-native` (direct binary call; the native default)
 and `posix` (the bundled `.sh` scripts; the Docker-wrapper default). Set it
 before running `install-hooks` so the choice is baked into the rendered
-commands. The native hook spools events locally and drains them at
-session boundaries; the whole-minute spool-timing overrides are shared with
-Windows and documented in
+commands. The native hook spools events locally, does short session-start
+cleanup, and starts a detached session-end `hook-drain` helper; the whole-minute
+spool-timing overrides are shared with Windows and documented in
 [`docs/windows.md`](windows.md#tuning-the-spool-timings-high-latency-instances).
 
 ## Troubleshooting on macOS
