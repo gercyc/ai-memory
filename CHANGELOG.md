@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider blocks ([#147]).
 
 ### Fixed
+- Gemini structured output no longer fails with `400 INVALID_ARGUMENT …
+  "type" … Proto field is not repeating, cannot start list` when a schema
+  contains an optional field. `prepare_schema_for_gemini` now collapses
+  schemars' Draft-2020-12 `type` arrays (e.g. `["string", "null"]` for
+  `Option<T>`) into Gemini's single `type` + `nullable: true` form, so
+  consolidation / auto-improve work again with `gemini-2.5-pro` and other
+  Gemini models.
 - The detached drainer's `logs/hook-drain.log` now rotates once it exceeds
   1 MiB (previous contents move to `hook-drain.log.old`), so an agent
   pointed at a chronically unreachable server can no longer grow the log
