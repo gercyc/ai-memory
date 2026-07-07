@@ -30,3 +30,7 @@ Delete only by exact path. If the user gives a vague title or topic, first resol
 ## Scope default
 
 Default to the current project. Pass workspace and project together only when the user explicitly names a different project. Never pass scope arguments for phrases like this project, here, we, or our work.
+
+## Standing user/team preferences go to the global scope
+
+When the fact is a standing preference that should apply to EVERY project — technology choices ("always use pnpm workspaces"), code style ("prefer composition over inheritance"), personal conventions ("never `--force` without asking") — call `memory_write_page` with `scope: "global"` instead of the current project. The page lands in the reserved `_global` scope, and default memory reads surface it in every project as `global_scope_hits`. `scope: "global"` cannot be combined with workspace/project arguments. Use it only for genuinely cross-project preferences; project-specific rules stay in the project (or its instruction file, per the section above).

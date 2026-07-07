@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Global preferences scope ([#154]): standing user/team context that
+  should apply to every project — technology choices, code style,
+  durable personal conventions — now has a dedicated home. Write with
+  `memory_write_page` + `scope: "global"`; the page lands in the
+  reserved `_global` project (default workspace, following the
+  `_meta.md`/`_pending/` reserved-name convention). Default-scoped
+  `memory_query` calls union that scope into every project as a new
+  `global_scope_hits` response field — one extra scoped search, not the
+  O(projects) `global=true` fan-out — while explicitly scoped queries
+  (`workspace`/`project`/`scopes`/`global=true`) are unchanged. The
+  scope participates by existence: no config, zero effect until the
+  first global write. Event capture never creates or attributes to it —
+  a directory or marker override named `_global` falls back to the
+  server-default project.
+
 ### Fixed
 - A session that is resumed under the same id after an early `SessionEnd`
   now re-consolidates when it ends again. The end-of-session guard used to

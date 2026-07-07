@@ -730,6 +730,24 @@ async fn resolve_project_ids(
         }
     };
 
+    // The reserved global preferences scope (issue #154) is written only
+    // through explicit MCP `scope: "global"` requests — event capture must
+    // never create it or leak observations into it, whether the name came
+    // from a directory literally called `_global` or a marker-file
+    // override. Fall back to the server-default project, same as a
+    // cwd-less event.
+    if project_name == ai_memory_core::GLOBAL_SCOPE_PROJECT {
+        debug!(
+            cwd = ?cwd_norm,
+            "hook router: refusing to attribute event capture to the reserved \
+             global scope; using the server-default project"
+        );
+        state
+            .active_project
+            .set_for(actor, state.workspace_id, state.project_id);
+        return Ok((state.workspace_id, state.project_id));
+    }
+
     fn derive_project_from_cwd(
         cwd: &str,
         strategy: ProjectStrategy,
@@ -1460,6 +1478,61 @@ mod tests {
         // The MCP-shared pointer reflects the most recently resolved
         // project (issue #2) — here, project-beta.
         assert_eq!(state.active_project.get(), Some((ws_b, proj_b)));
+    }
+
+    // Issue #154: event capture must never create or attribute to the
+    // reserved `_global` preferences scope — not from a directory that
+    // happens to carry the reserved name, and not from a marker-file
+    // project override.
+    #[tokio::test]
+    async fn reserved_global_scope_is_never_auto_attributed() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+
+        // cwd whose basename is the reserved name.
+        let (ws, proj) = resolve_project_ids(
+            &state,
+            Some("/home/user/_global"),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (ws, proj),
+            (state.workspace_id, state.project_id),
+            "cwd named _global must fall back to the server-default project"
+        );
+
+        // Explicit marker-file override naming the reserved scope.
+        let (ws, proj) = resolve_project_ids(
+            &state,
+            Some("/home/user/some-project"),
+            None,
+            Some(ai_memory_core::GLOBAL_SCOPE_PROJECT),
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (ws, proj),
+            (state.workspace_id, state.project_id),
+            "project override _global must fall back to the server-default project"
+        );
+
+        // Neither call may have materialised the reserved project row.
+        let created = state
+            .reader
+            .find_project(
+                state.workspace_id,
+                ai_memory_core::GLOBAL_SCOPE_PROJECT.to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created, None, "event capture must not create _global");
     }
 
     #[tokio::test]

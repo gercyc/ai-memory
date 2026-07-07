@@ -175,7 +175,10 @@ the conversation calls for them:\n\
   to propose architecture (always check first). Defaults to the \
   current project; pass `scopes` to search named sibling projects, \
   or `global=true` to search EVERY project at once when you don't \
-  know where the knowledge lives.\n\
+  know where the knowledge lives. Default-scoped calls also return \
+  `global_scope_hits` — standing user/team preferences from the \
+  reserved `_global` scope; treat them as context that applies to \
+  every project.\n\
 - `memory_recent` — at session start, or when the user asks 'what's \
   been going on lately'. Returns the N most-recent pages.\n\
 - `memory_status` — when the user asks 'is ai-memory healthy' or \
@@ -225,7 +228,11 @@ should be proposed from a completed session, or at explicit wrap-up \
   do NOT use `memory_handoff_begin` for permanent annotations. \
   Put the title as a `# H1` on the first line of `body` and omit the \
   `title` argument — ai-memory derives the title automatically and \
-  passing `title` is a known JSON-escape footgun (issue #67).\n\
+  passing `title` is a known JSON-escape footgun (issue #67). When the \
+  fact is a standing user/team preference that should apply to EVERY \
+  project ('always use pnpm', 'never force-push', code style rules), \
+  pass `scope: \"global\"` so it lands in the reserved `_global` scope \
+  instead of the current project.\n\
 - `memory_read_page` — when the user asks to read, open, or show the \
   full content of a specific page. Accepts a `query` (searches FTS5 and \
   returns the top hit's full body) or a `path` (direct lookup). Pass \
@@ -420,6 +427,13 @@ struct MemoryQueryResponse {
     /// carrying its workspace + project name.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     global_hits: Vec<ai_memory_store::PageHitWithMeta>,
+    /// Standing user/team context from the reserved `_global` preferences
+    /// scope, unioned into default-scoped queries alongside the current
+    /// project's `hits` (issue #154). Empty when the scope doesn't exist or
+    /// the query was explicitly scoped (`workspace`/`project`/`scopes`/
+    /// `global=true`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    global_scope_hits: Vec<ai_memory_store::PageHit>,
 }
 
 #[derive(Debug, Serialize)]
@@ -704,6 +718,12 @@ struct WritePageArgs {
     /// `project`; created if it doesn't exist. Omit for the current workspace.
     #[serde(default)]
     workspace: Option<String>,
+    /// Set to `"global"` to write into the reserved `_global` preferences
+    /// scope — standing user/team context (tech preferences, code style,
+    /// durable decisions) that default `memory_query` reads union into
+    /// every project. Cannot be combined with `workspace`/`project`.
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[tool_router]
@@ -1043,7 +1063,10 @@ impl AiMemoryServer {
         Returns up to `limit` pages with HTML-marked snippets and a rank \
         score (lower rank = better match). Only latest page versions. \
         If compiled wiki search misses, `raw_hits` contains bounded raw \
-        observation fallback matches. Set `global=true` to search EVERY \
+        observation fallback matches. Default-scoped calls also return \
+        `global_scope_hits`: standing user/team preferences from the \
+        reserved `_global` scope that apply across projects. Set \
+        `global=true` to search EVERY \
         project at once (cross-project) when you don't know which project \
         holds the knowledge — each hit then carries its workspace + \
         project name.")]
@@ -1079,6 +1102,7 @@ impl AiMemoryServer {
                 hits: Vec::new(),
                 raw_hits: Vec::new(),
                 global_hits,
+                global_scope_hits: Vec::new(),
             });
         }
         if !args.scopes.is_empty()
@@ -1156,10 +1180,57 @@ impl AiMemoryServer {
         } else {
             Vec::new()
         };
+        // Default-scoped queries (no workspace/project/scopes/global args)
+        // also union the reserved `_global` preferences scope, so standing
+        // user/team context travels into every project without the caller
+        // knowing a magic project name (issue #154). Explicit scoping means
+        // the caller asked for exactly those scopes — leave it alone. One
+        // extra scoped search when the scope exists; zero cost when it
+        // doesn't.
+        let default_scoped = args.scopes.is_empty()
+            && args
+                .workspace
+                .as_deref()
+                .is_none_or(|s| s.trim().is_empty())
+            && args.project.as_deref().is_none_or(|s| s.trim().is_empty());
+        let global_scope_hits = if default_scoped {
+            match ai_memory_store::lookup_global_scope(&self.reader).await {
+                Ok(Some(scope)) => {
+                    // If the current project IS the reserved scope (e.g. the
+                    // actor's active-project pointer lands there after a
+                    // global write), `hits` already covers it — don't search
+                    // it twice.
+                    let current = self
+                        .effective_ids_for_read_args_with_actor(None, None, &aps_actor)
+                        .await?;
+                    if current == scope.as_tuple() {
+                        Vec::new()
+                    } else {
+                        let hits = self
+                            .search_project(
+                                scope.workspace_id,
+                                scope.project_id,
+                                &args.query,
+                                query_vec.as_deref(),
+                                limit,
+                            )
+                            .await
+                            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                        self.spawn_access_bump(hits.iter().map(|h| h.id).collect());
+                        hits
+                    }
+                }
+                Ok(None) => Vec::new(),
+                Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+            }
+        } else {
+            Vec::new()
+        };
         let response = MemoryQueryResponse {
             hits,
             raw_hits,
             global_hits: Vec::new(),
+            global_scope_hits,
         };
         ok_json(&response)
     }
@@ -1551,6 +1622,10 @@ impl AiMemoryServer {
         relative path such as `notes/<topic>.md`, `concepts/<topic>.md`, \
         `decisions/<topic>.md`, or `_rules/<topic>.md`. `tier` defaults \
         to `semantic`; set `pinned=true` for facts that should never decay. \
+        For standing user/team preferences that apply to EVERY project \
+        (tech choices, code style, durable personal rules), pass \
+        `scope: \"global\"` — the page lands in the reserved `_global` \
+        scope and default memory_query calls surface it in every project. \
         \
         **Title convention:** start `body` with a `# Some Title` line — \
         ai-memory derives the title from that H1 automatically. Do NOT \
@@ -1576,13 +1651,42 @@ impl AiMemoryServer {
             .map_err(|_| McpError::internal_error(format!("unknown tier '{tier_name}'"), None))?;
         let path = PagePath::new(args.path.clone())
             .map_err(|e| McpError::internal_error(format!("invalid path: {e}"), None))?;
-        let (ws, proj) = self
-            .write_target_ids_with_actor(
-                args.workspace.as_deref(),
-                args.project.as_deref(),
-                &aps_actor,
-            )
-            .await?;
+        let (ws, proj) = match args.scope.as_deref().map(str::trim) {
+            None | Some("") => {
+                self.write_target_ids_with_actor(
+                    args.workspace.as_deref(),
+                    args.project.as_deref(),
+                    &aps_actor,
+                )
+                .await?
+            }
+            Some("global") => {
+                if args
+                    .workspace
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty())
+                    || args
+                        .project
+                        .as_deref()
+                        .is_some_and(|s| !s.trim().is_empty())
+                {
+                    return Err(McpError::internal_error(
+                        "scope: \"global\" cannot be combined with workspace/project",
+                        None,
+                    ));
+                }
+                ai_memory_store::create_global_scope(&self.writer)
+                    .await
+                    .map_err(Self::scope_error)?
+                    .as_tuple()
+            }
+            Some(other) => {
+                return Err(McpError::internal_error(
+                    format!("unknown scope '{other}': the only supported value is \"global\""),
+                    None,
+                ));
+            }
+        };
 
         let mut fm = serde_json::Map::new();
         if let Some(title) = &args.title {
@@ -3230,6 +3334,7 @@ mod tests {
                     pinned: false,
                     project: Some("sibling".to_string()),
                     workspace: None,
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(parts),
             )
@@ -3319,6 +3424,168 @@ mod tests {
             None => panic!("expected text content"),
         };
         assert!(text.contains("foo.md"), "expected hit; got {text}");
+    }
+
+    // Issue #154: default-scoped queries union the reserved `_global`
+    // preferences scope; explicitly scoped queries do not.
+    #[tokio::test]
+    async fn default_query_unions_global_scope_and_explicit_scope_skips_it() {
+        let (_tmp, store, server, _ws, _proj) = setup_server().await;
+        let global = ai_memory_store::create_global_scope(&store.writer)
+            .await
+            .unwrap();
+        store
+            .writer
+            .upsert_page(NewPage {
+                workspace_id: global.workspace_id,
+                project_id: global.project_id,
+                path: PagePath::new("preferences/style.md").unwrap(),
+                title: "Style".into(),
+                body: "Karpathy approved standing preference: pnpm always.".into(),
+                tier: Tier::Semantic,
+                frontmatter_json: serde_json::json!({}),
+                pinned: false,
+                links: Vec::new(),
+                author_id: None,
+            })
+            .await
+            .unwrap();
+
+        let query = |workspace: Option<&str>, project: Option<&str>| QueryArgs {
+            query: "karpathy".into(),
+            limit: Some(5),
+            project: project.map(str::to_string),
+            scopes: Vec::new(),
+            workspace: workspace.map(str::to_string),
+            global: None,
+        };
+
+        let result = server
+            .memory_query(
+                Parameters(query(None, None)),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let text = result.content.first().and_then(|c| c.as_text()).unwrap();
+        assert!(
+            text.text.contains("foo.md"),
+            "current-project hit must remain: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("global_scope_hits") && text.text.contains("preferences/style.md"),
+            "default query must union the reserved global scope: {}",
+            text.text
+        );
+
+        let result = server
+            .memory_query(
+                Parameters(query(Some("default"), Some("scratch"))),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let text = result.content.first().and_then(|c| c.as_text()).unwrap();
+        assert!(
+            !text.text.contains("preferences/style.md"),
+            "explicitly scoped queries must not union the global scope: {}",
+            text.text
+        );
+    }
+
+    // Issue #154: an absent `_global` scope contributes nothing and is
+    // never created by a read.
+    #[tokio::test]
+    async fn default_query_without_global_scope_is_unchanged() {
+        let (_tmp, store, server, _ws, _proj) = setup_server().await;
+        let result = server
+            .memory_query(
+                Parameters(QueryArgs {
+                    query: "karpathy".into(),
+                    limit: Some(5),
+                    project: None,
+                    scopes: Vec::new(),
+                    workspace: None,
+                    global: None,
+                }),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let text = result.content.first().and_then(|c| c.as_text()).unwrap();
+        assert!(
+            !text.text.contains("global_scope_hits"),
+            "no reserved scope -> field elided: {}",
+            text.text
+        );
+        assert_eq!(
+            ai_memory_store::lookup_global_scope(&store.reader)
+                .await
+                .unwrap(),
+            None,
+            "a read must never create the reserved scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_page_scope_global_lands_in_reserved_scope() {
+        let (tmp, store, server, _ws, _proj) = setup_server().await;
+        let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
+        let server = server.with_wiki(wiki);
+        let write_args = |scope: Option<&str>, project: Option<&str>| WritePageArgs {
+            path: "preferences/pkg.md".to_string(),
+            body: "# Package manager\nAlways pnpm workspaces.".to_string(),
+            title: None,
+            tier: None,
+            tags: Vec::new(),
+            pinned: false,
+            project: project.map(str::to_string),
+            workspace: None,
+            scope: scope.map(str::to_string),
+        };
+
+        server
+            .memory_write_page(
+                Parameters(write_args(Some("global"), None)),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let global = ai_memory_store::lookup_global_scope(&store.reader)
+            .await
+            .unwrap()
+            .expect("scope: global write must create the reserved scope");
+        let pages = store
+            .reader
+            .recent_pages_for_project(global.workspace_id, global.project_id, 10)
+            .await
+            .unwrap();
+        assert!(
+            pages
+                .iter()
+                .any(|p| p.path.as_str() == "preferences/pkg.md"),
+            "page must land in the reserved scope; got {:?}",
+            pages.iter().map(|p| p.path.as_str()).collect::<Vec<_>>()
+        );
+
+        let err = server
+            .memory_write_page(
+                Parameters(write_args(Some("global"), Some("other"))),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .expect_err("scope + project must fail closed");
+        assert!(err.to_string().contains("cannot be combined"), "{err}");
+
+        let err = server
+            .memory_write_page(
+                Parameters(write_args(Some("universe"), None)),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .expect_err("unknown scope values must fail closed");
+        assert!(err.to_string().contains("unknown scope"), "{err}");
     }
 
     #[tokio::test]
@@ -3941,6 +4208,7 @@ mod tests {
                     pinned: true,
                     project: None,
                     workspace: None,
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(parts),
             )
@@ -4006,6 +4274,7 @@ mod tests {
                     pinned: false,
                     project: None,
                     workspace: Some("default".into()),
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(test_parts_default()),
             )
@@ -4071,6 +4340,7 @@ mod tests {
                     pinned: false,
                     project: None,
                     workspace: None,
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(parts),
             )
@@ -4118,6 +4388,7 @@ mod tests {
                     pinned: false,
                     project: None,
                     workspace: None,
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(test_parts_default()),
             )
@@ -4180,6 +4451,7 @@ mod tests {
                     pinned: false,
                     project: None,
                     workspace: None,
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(parts()),
             )
@@ -4267,6 +4539,7 @@ mod tests {
                     pinned: false,
                     project: None,
                     workspace: None,
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(test_parts_default()),
             )
@@ -4358,6 +4631,7 @@ mod tests {
                     pinned: false,
                     project: Some("shared".into()),
                     workspace: Some("alpha".into()),
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(parts()),
             )
@@ -4374,6 +4648,7 @@ mod tests {
                     pinned: false,
                     project: Some("shared".into()),
                     workspace: Some("beta".into()),
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(parts()),
             )
@@ -4471,6 +4746,7 @@ mod tests {
                     pinned: false,
                     project: Some("other".into()),
                     workspace: None,
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(parts()),
             )
@@ -5080,6 +5356,7 @@ mod tests {
                     pinned: false,
                     project: Some("audited".into()),
                     workspace: None,
+                    scope: None,
                 }),
                 rmcp::handler::server::tool::Extension(parts()),
             )

@@ -2099,8 +2099,19 @@ mod tests {
         .await;
 
         assert!(proposals.is_empty());
-        assert_eq!(rejected[0].reason, "eval_gate_error");
-        assert!(rejected[0].evidence.contains("eval stdout exceeded"));
+        // This test has flaked rarely on loaded machines with a different
+        // eval_gate_error; print the actual reason/evidence so the next
+        // occurrence identifies the real failure mode instead of hiding it.
+        assert_eq!(
+            rejected[0].reason, "eval_gate_error",
+            "evidence: {}",
+            rejected[0].evidence
+        );
+        assert!(
+            rejected[0].evidence.contains("eval stdout exceeded"),
+            "evidence: {}",
+            rejected[0].evidence
+        );
     }
 
     #[test]

@@ -72,6 +72,13 @@ priors are at the [bottom](#influences-and-prior-art).
   linked git worktrees.
   Same page path can exist in two projects without collision; a
   rename is one column update; a purge is one `rm -rf`.
+- **Global preferences scope.** Standing user/team context — tech
+  choices, code style, durable personal rules — lives in the reserved
+  `_global` scope (`memory_write_page` with `scope: "global"`). Default
+  `memory_query` reads union it into every project as
+  `global_scope_hits`, so preferences travel with you into new projects
+  without naming a magic project or paying the all-projects
+  `global=true` fan-out. Event capture never writes there.
 - **Karpathy-style LLM wiki.** Pages are compiled from observations
   at session-end (or PreCompact; Codex can use `ai-memory finalize-session`
   for a manual final close), not retrieved over raw logs.

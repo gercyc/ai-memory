@@ -221,6 +221,54 @@ pub async fn create_explicit_scope(
     })
 }
 
+/// Look up the reserved global preferences scope
+/// ([`ai_memory_core::GLOBAL_SCOPE_PROJECT`] in the default workspace)
+/// without creating it. Returns `Ok(None)` when it doesn't exist yet — the
+/// scope participates in default reads by existence, so an absent scope
+/// means "nothing to union in", never an error (issue #154).
+///
+/// # Errors
+/// Propagates store failures only; a missing workspace or project is `None`.
+pub async fn lookup_global_scope(
+    reader: &ReaderPool,
+) -> Result<Option<ResolvedScope>, ScopeResolutionError> {
+    let Some(workspace_id) = reader
+        .find_workspace(ai_memory_core::DEFAULT_WORKSPACE_NAME.to_owned())
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(project_id) = reader
+        .find_project(
+            workspace_id,
+            ai_memory_core::GLOBAL_SCOPE_PROJECT.to_owned(),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedScope {
+        workspace_id,
+        project_id,
+    }))
+}
+
+/// Create or fetch the reserved global preferences scope. Write-path only —
+/// the counterpart of [`lookup_global_scope`] for `scope: "global"` writes.
+///
+/// # Errors
+/// Propagates store failures.
+pub async fn create_global_scope(
+    writer: &WriterHandle,
+) -> Result<ResolvedScope, ScopeResolutionError> {
+    create_explicit_scope(
+        writer,
+        ai_memory_core::DEFAULT_WORKSPACE_NAME,
+        ai_memory_core::GLOBAL_SCOPE_PROJECT,
+    )
+    .await
+}
+
 /// Resolve and de-duplicate explicit multi-scope names without creating
 /// anything. Surfaces that do not have a current-project default (admin/web)
 /// can call this directly; [`ScopeResolver::resolve_many_existing`] delegates
@@ -597,5 +645,28 @@ mod tests {
             err,
             ScopeResolutionError::TooManyScopes { max: 1, actual: 2 }
         );
+    }
+
+    #[tokio::test]
+    async fn global_scope_lookup_is_none_until_created_then_stable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        // Reads never materialise the reserved scope.
+        assert_eq!(lookup_global_scope(&store.reader).await.unwrap(), None);
+        assert_eq!(
+            lookup_global_scope(&store.reader).await.unwrap(),
+            None,
+            "lookup must stay a pure read"
+        );
+
+        // The write path creates it once; lookup then resolves the same ids.
+        let created = create_global_scope(&store.writer).await.unwrap();
+        let looked_up = lookup_global_scope(&store.reader).await.unwrap();
+        assert_eq!(looked_up, Some(created));
+
+        // Idempotent create.
+        let again = create_global_scope(&store.writer).await.unwrap();
+        assert_eq!(again, created);
     }
 }

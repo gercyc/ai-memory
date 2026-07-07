@@ -23,6 +23,16 @@ pub const DEFAULT_WORKSPACE_NAME: &str = "default";
 /// Defensive project fallback used only when no cwd/project is available.
 pub const DEFAULT_PROJECT_NAME: &str = "scratch";
 
+/// Reserved project holding user/team-level standing context — technology
+/// preferences, code style, durable decisions that every project should
+/// inherit (issue #154). Lives in [`DEFAULT_WORKSPACE_NAME`]. Default
+/// `memory_query` reads union this scope with the current project; it is
+/// written only through explicit `scope: "global"` requests. The leading
+/// underscore follows the wiki's reserved-name convention (`_meta.md`,
+/// `_pending/`, `_lint/`) and the hook router refuses to auto-attribute
+/// event capture to it.
+pub const GLOBAL_SCOPE_PROJECT: &str = "_global";
+
 pub use active_project::{
     ActiveProject, ActiveProjectMode, ActorKey, DEFAULT_MAX_ENTRIES, DEFAULT_PER_KEY_TTL,
 };
