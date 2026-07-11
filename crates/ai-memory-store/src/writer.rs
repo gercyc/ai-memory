@@ -163,6 +163,12 @@ pub(crate) enum WriteCmd {
         force: bool,
         reply: oneshot::Sender<StoreResult<DeleteWorkspaceSummary>>,
     },
+    /// Rename a workspace's `name` column (UUID-keyed dir doesn't move).
+    RenameWorkspace {
+        workspace_id: WorkspaceId,
+        new_name: String,
+        reply: oneshot::Sender<StoreResult<()>>,
+    },
     /// Re-stamp a project's `workspace_id` across every domain table in one
     /// transaction, keeping the same `project_id` (a lossless cross-workspace
     /// "true move"). The caller renames the on-disk dir and ensures the
@@ -649,6 +655,26 @@ impl WriterHandle {
         self.send(WriteCmd::DeleteWorkspace {
             workspace_id,
             force,
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
+    /// Rename a workspace (column-only; the on-disk dir is UUID-keyed).
+    ///
+    /// # Errors
+    /// [`StoreError::WorkspaceNameTaken`] / [`StoreError::InvalidWorkspaceName`]
+    /// / [`StoreError::NotFound`] / [`StoreError::WriterClosed`].
+    pub async fn rename_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        new_name: impl Into<String>,
+    ) -> StoreResult<()> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::RenameWorkspace {
+            workspace_id,
+            new_name: new_name.into(),
             reply: tx,
         })
         .await?;
@@ -1200,6 +1226,14 @@ fn worker_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriteCmd>) {
             } => {
                 let result = ops::delete_workspace(&mut conn, &workspace_id, force);
                 send_or_warn(reply, result, "delete_workspace");
+            }
+            WriteCmd::RenameWorkspace {
+                workspace_id,
+                new_name,
+                reply,
+            } => {
+                let result = ops::rename_workspace(&mut conn, &workspace_id, &new_name);
+                send_or_warn(reply, result, "rename_workspace");
             }
             WriteCmd::MoveProjectWorkspace {
                 project_id,

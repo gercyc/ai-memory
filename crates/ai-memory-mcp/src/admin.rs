@@ -516,6 +516,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/admin/rename-project", post(handle_rename_project))
         .route("/admin/move-project", post(handle_move_project))
         .route("/admin/delete-workspace", post(handle_delete_workspace))
+        .route("/admin/rename-workspace", post(handle_rename_workspace))
         .route("/admin/write-page", post(handle_write_page))
         .route("/admin/delete-page", post(handle_delete_page));
     let users = Router::new()
@@ -2953,6 +2954,75 @@ async fn handle_purge_project(
 // ---------------------------------------------------------------------
 // rename-project
 // ---------------------------------------------------------------------
+
+/// JSON request body for `POST /admin/rename-workspace`.
+#[derive(Deserialize)]
+struct RenameWorkspaceRequest {
+    /// Current workspace name (must exist).
+    from: String,
+    /// New workspace name. Must be non-empty, no slashes, and not already used.
+    to: String,
+}
+
+/// Wire-format summary returned by `POST /admin/rename-workspace`.
+#[derive(Debug, Serialize)]
+pub struct RenameWorkspaceResult {
+    /// Previous workspace name.
+    pub from: String,
+    /// New workspace name.
+    pub to: String,
+    /// Post-rename mirror checkpoint, if one was taken.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<String>,
+}
+
+/// `POST /admin/rename-workspace` — rename a workspace (column-only; the
+/// on-disk dir is UUID-keyed, so nothing moves). 404 unknown, 422 taken/invalid.
+async fn handle_rename_workspace(
+    State(state): State<Arc<AdminState>>,
+    Json(req): Json<RenameWorkspaceRequest>,
+) -> impl IntoResponse {
+    let ws_id = match state.reader.find_workspace(req.from.clone()).await {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("workspace '{}' not found", req.from)
+                })),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            );
+        }
+    };
+    if let Err(e) = state.writer.rename_workspace(ws_id, req.to.clone()).await {
+        let status = match &e {
+            StoreError::WorkspaceNameTaken(_) | StoreError::InvalidWorkspaceName(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            StoreError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        return (status, Json(serde_json::json!({ "error": e.to_string() })));
+    }
+    let checkpoint = checkpoint_or_warn(
+        &state.wiki,
+        format!("rename-workspace {} -> {}", req.from, req.to),
+    );
+    let result = RenameWorkspaceResult {
+        from: req.from.clone(),
+        to: req.to.clone(),
+        checkpoint,
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
+    )
+}
 
 /// JSON request body for `POST /admin/delete-workspace`.
 #[derive(Deserialize)]

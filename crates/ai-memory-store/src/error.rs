@@ -60,6 +60,15 @@ pub enum StoreError {
     #[error("workspace still has {0} project(s); pass force to delete anyway")]
     WorkspaceNotEmpty(u64),
 
+    /// A workspace rename was rejected because the destination name is already
+    /// in use by another workspace (`workspaces.name` is UNIQUE).
+    #[error("workspace name '{0}' is already taken")]
+    WorkspaceNameTaken(String),
+
+    /// The supplied workspace name failed validation (empty, slash, etc.).
+    #[error("invalid workspace name: {0}")]
+    InvalidWorkspaceName(String),
+
     /// A UNIQUE constraint was violated by an insert (e.g. duplicate
     /// `users.username` / `users.email`). The string carries a
     /// human-readable explanation the CLI / admin endpoint surfaces

@@ -1398,6 +1398,48 @@ pub fn delete_workspace(
     })
 }
 
+/// Rename a workspace: a `workspaces.name` UPDATE only — the on-disk dir is
+/// keyed by UUID, so nothing moves. Mirrors [`rename_project`].
+///
+/// # Errors
+/// [`StoreError::InvalidWorkspaceName`] on an empty / `/`-containing name;
+/// [`StoreError::WorkspaceNameTaken`] on a `UNIQUE(name)` collision;
+/// [`StoreError::NotFound`] when the workspace vanished (race with delete).
+pub fn rename_workspace(
+    conn: &mut Connection,
+    workspace_id: &WorkspaceId,
+    new_name: &str,
+) -> StoreResult<()> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err(StoreError::InvalidWorkspaceName(
+            "workspace name must not be empty or all whitespace".into(),
+        ));
+    }
+    if trimmed.contains('/') {
+        return Err(StoreError::InvalidWorkspaceName(
+            "workspace name must not contain '/'".into(),
+        ));
+    }
+    let rows = conn.execute(
+        "UPDATE workspaces SET name = ?1 WHERE id = ?2",
+        params![trimmed, workspace_id.as_bytes()],
+    );
+    match rows {
+        Ok(0) => Err(StoreError::NotFound(format!(
+            "workspace id {workspace_id} no longer exists (race with delete)"
+        ))),
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                || err.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            Err(StoreError::WorkspaceNameTaken(trimmed.to_string()))
+        }
+        Err(e) => Err(StoreError::Sqlite(e)),
+    }
+}
+
 /// Summary returned by [`move_project_workspace`] and exposed via
 /// [`crate::writer::WriterHandle::move_project_workspace`].
 #[derive(Debug, Default, Clone)]
@@ -1820,6 +1862,31 @@ mod tests {
         let summary = delete_workspace(&mut conn, &empty, false).unwrap();
         assert_eq!(summary.projects_deleted, 0);
         assert_eq!(summary.pages_deleted, 0);
+    }
+
+    #[test]
+    fn rename_workspace_updates_name_and_rejects_collision() {
+        let (_tmp, mut conn, ws, _proj) = fresh_db();
+        get_or_create_workspace(&mut conn, "taken").unwrap();
+
+        rename_workspace(&mut conn, &ws, "renamed").unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM workspaces WHERE id = ?1",
+                rusqlite::params![ws.as_bytes()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "renamed", "name column updated in place");
+
+        assert!(matches!(
+            rename_workspace(&mut conn, &ws, "taken").unwrap_err(),
+            StoreError::WorkspaceNameTaken(_)
+        ));
+        assert!(matches!(
+            rename_workspace(&mut conn, &ws, "   ").unwrap_err(),
+            StoreError::InvalidWorkspaceName(_)
+        ));
     }
 
     fn fresh_db() -> (

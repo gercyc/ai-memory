@@ -1633,3 +1633,66 @@ async fn delete_workspace_unknown_is_404() {
     .await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn rename_workspace_ok_collision_and_unknown() {
+    // OK: renames in place; old name no longer resolves, new one does.
+    {
+        let tmp = TempDir::new().unwrap();
+        let (state, store) = make_state(&tmp).await;
+        seed_page(&store, &state.wiki, "old", "proj", "notes/a.md", "b").await;
+        let resp = post(
+            state,
+            "/admin/rename-workspace",
+            json!({"from":"old","to":"new"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            store
+                .reader
+                .find_workspace("new".into())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .reader
+                .find_workspace("old".into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    // 422: destination name already taken.
+    {
+        let tmp = TempDir::new().unwrap();
+        let (state, store) = make_state(&tmp).await;
+        seed_page(&store, &state.wiki, "old", "proj", "notes/a.md", "b").await;
+        store
+            .writer
+            .get_or_create_workspace("occupied")
+            .await
+            .unwrap();
+        let resp = post(
+            state,
+            "/admin/rename-workspace",
+            json!({"from":"old","to":"occupied"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    // 404: unknown source workspace.
+    {
+        let tmp = TempDir::new().unwrap();
+        let (state, _store) = make_state(&tmp).await;
+        let resp = post(
+            state,
+            "/admin/rename-workspace",
+            json!({"from":"ghost","to":"x"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}
