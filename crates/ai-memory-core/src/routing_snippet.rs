@@ -115,6 +115,10 @@ pub fn full_block() -> String {
 /// `None` when no line-anchored occurrence exists.
 #[must_use]
 pub fn find_marker_line(haystack: &str, marker: &str, from: usize) -> Option<usize> {
+    if marker.is_empty() || from > haystack.len() || !haystack.is_char_boundary(from) {
+        return None;
+    }
+
     let mut idx = from;
     while let Some(rel) = haystack[idx..].find(marker) {
         let pos = idx + rel;
@@ -155,6 +159,13 @@ mod tests {
     #[test]
     fn find_marker_line_absent_returns_none() {
         assert!(find_marker_line("no markers here\n", MARKER_END, 0).is_none());
+    }
+
+    #[test]
+    fn find_marker_line_rejects_invalid_search_inputs() {
+        assert!(find_marker_line(MARKER_END, "", 0).is_none());
+        assert!(find_marker_line(MARKER_END, MARKER_END, MARKER_END.len() + 1).is_none());
+        assert!(find_marker_line("é\n", MARKER_END, 1).is_none());
     }
 
     /// Option-2 guard: the canonical block must not embed the markers

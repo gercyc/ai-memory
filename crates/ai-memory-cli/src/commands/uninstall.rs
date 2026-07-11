@@ -22,6 +22,11 @@ use anyhow::{Context, Result};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+const LEGACY_ORPHAN_TAIL_LF: &str =
+    "` markers without\ndisturbing the rest of the file.\n<!-- ai-memory:end -->\n";
+const LEGACY_ORPHAN_TAIL_CRLF: &str =
+    "` markers without\r\ndisturbing the rest of the file.\r\n<!-- ai-memory:end -->\r\n";
+
 /// One rewrite operation to apply to a config file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RewriteOp {
@@ -490,19 +495,27 @@ fn strip_instructions_block(content: &str) -> (String, bool) {
     };
     let end = end_pos + MARKER_END.len();
     // Consume a trailing newline after the end marker if present.
-    let after = if content.as_bytes().get(end).copied() == Some(b'\n') {
+    let after = if content.as_bytes().get(end..end + 2) == Some(b"\r\n") {
+        end + 2
+    } else if content.as_bytes().get(end).copied() == Some(b'\n') {
         end + 1
     } else {
         end
     };
     let mut head = content[..start].to_string();
-    let tail = &content[after..];
+    let tail = strip_legacy_orphan_tail(&content[after..]);
     // When the block sat at EOF, install added a blank-line separator
     // before it; drop that artifact so install→uninstall round-trips.
     if tail.is_empty() && head.ends_with("\n\n") {
         head.pop();
     }
     (format!("{head}{tail}"), true)
+}
+
+fn strip_legacy_orphan_tail(tail: &str) -> &str {
+    tail.strip_prefix(LEGACY_ORPHAN_TAIL_LF)
+        .or_else(|| tail.strip_prefix(LEGACY_ORPHAN_TAIL_CRLF))
+        .unwrap_or(tail)
 }
 
 /// True when a hook command string was written by ai-memory. Legacy script
@@ -903,6 +916,23 @@ mod tests {
             stripped, original,
             "no orphan tail after the real end marker"
         );
+    }
+
+    #[test]
+    fn strip_consumes_crlf_after_end_marker() {
+        let content = format!("# Top\r\n\r\n{MARKER_START}\r\nBODY\r\n{MARKER_END}\r\nMore\r\n");
+        let (stripped, found) = strip_instructions_block(&content);
+        assert!(found);
+        assert_eq!(stripped, "# Top\r\n\r\nMore\r\n");
+    }
+
+    #[test]
+    fn strip_removes_exact_legacy_orphan_tail() {
+        let content =
+            format!("# Top\n\n{MARKER_START}\nBODY\n{MARKER_END}\n{LEGACY_ORPHAN_TAIL_LF}More\n");
+        let (stripped, found) = strip_instructions_block(&content);
+        assert!(found);
+        assert_eq!(stripped, "# Top\n\nMore\n");
     }
 
     #[test]

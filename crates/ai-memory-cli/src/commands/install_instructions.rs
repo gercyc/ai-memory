@@ -29,6 +29,11 @@ use crate::config::Config;
 // block this subcommand writes. Single source of truth.
 use ai_memory_core::{MARKER_END, MARKER_START, find_marker_line, full_block};
 
+const LEGACY_ORPHAN_TAIL_LF: &str =
+    "` markers without\ndisturbing the rest of the file.\n<!-- ai-memory:end -->\n";
+const LEGACY_ORPHAN_TAIL_CRLF: &str =
+    "` markers without\r\ndisturbing the rest of the file.\r\n<!-- ai-memory:end -->\r\n";
+
 /// Run the `install-instructions` subcommand.
 ///
 /// # Errors
@@ -171,15 +176,18 @@ fn merge_instructions_block(existing: &str, block: &str) -> String {
         let end_idx = end_pos + MARKER_END.len();
         // Consume a trailing newline after the end marker if present
         // so we don't accumulate blank lines on every re-run.
-        let after_end = if existing.as_bytes().get(end_idx).copied() == Some(b'\n') {
+        let after_end = if existing.as_bytes().get(end_idx..end_idx + 2) == Some(b"\r\n") {
+            end_idx + 2
+        } else if existing.as_bytes().get(end_idx).copied() == Some(b'\n') {
             end_idx + 1
         } else {
             end_idx
         };
+        let tail = strip_legacy_orphan_tail(block, &existing[after_end..]);
         let mut out = String::with_capacity(existing.len() + block.len());
         out.push_str(&existing[..start_idx]);
         out.push_str(block);
-        out.push_str(&existing[after_end..]);
+        out.push_str(tail);
         return out;
     }
     // No prior block — append. If the file already ends with a
@@ -194,6 +202,44 @@ fn merge_instructions_block(existing: &str, block: &str) -> String {
     }
     out.push_str(block);
     out
+}
+
+fn strip_legacy_orphan_tail<'a>(block: &str, tail: &'a str) -> &'a str {
+    if let Some(rest) = tail.strip_prefix(LEGACY_ORPHAN_TAIL_LF) {
+        return rest;
+    }
+    if let Some(rest) = tail.strip_prefix(LEGACY_ORPHAN_TAIL_CRLF) {
+        return rest;
+    }
+    legacy_orphan_tail(block)
+        .and_then(|orphan| tail.strip_prefix(orphan))
+        .unwrap_or(tail)
+}
+
+fn legacy_orphan_tail(block: &str) -> Option<&str> {
+    let real_start = find_marker_line(block, MARKER_START, 0)?;
+    let real_end = find_marker_line(block, MARKER_END, real_start + MARKER_START.len())?;
+    let mut search_from = real_start + MARKER_START.len();
+    while let Some(rel) = block[search_from..real_end].find(MARKER_END) {
+        let inline = search_from + rel;
+        if find_marker_line(block, MARKER_END, inline) != Some(inline) {
+            let orphan_start = inline + MARKER_END.len();
+            let orphan_end = consume_line_ending(block, real_end + MARKER_END.len());
+            return Some(&block[orphan_start..orphan_end]);
+        }
+        search_from = inline + MARKER_END.len();
+    }
+    None
+}
+
+fn consume_line_ending(s: &str, idx: usize) -> usize {
+    if s.as_bytes().get(idx..idx + 2) == Some(b"\r\n") {
+        idx + 2
+    } else if s.as_bytes().get(idx).copied() == Some(b'\n') {
+        idx + 1
+    } else {
+        idx
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +306,30 @@ mod tests {
         // One inline mention + one real delimiter — nothing accumulated.
         assert_eq!(second.matches(MARKER_START).count(), 1);
         assert_eq!(second.matches(MARKER_END).count(), 2);
+    }
+
+    #[test]
+    fn merge_repairs_exact_legacy_orphan_tail() {
+        let block = full_block();
+        let legacy_corrupt = format!("# Title\n\n{block}{LEGACY_ORPHAN_TAIL_LF}More notes.\n");
+        let out = merge_instructions_block(&legacy_corrupt, &block);
+        assert_eq!(out, format!("# Title\n\n{block}More notes.\n"));
+    }
+
+    #[test]
+    fn merge_repairs_exact_legacy_orphan_tail_crlf_variant() {
+        let block = full_block();
+        let legacy_corrupt = format!("# Title\r\n\r\n{block}{LEGACY_ORPHAN_TAIL_CRLF}More\r\n");
+        let out = merge_instructions_block(&legacy_corrupt, &block);
+        assert_eq!(out, format!("# Title\r\n\r\n{block}More\r\n"));
+    }
+
+    #[test]
+    fn merge_consumes_crlf_after_end_marker() {
+        let original = format!("# Title\r\n\r\n{MARKER_START}\r\nOLD\r\n{MARKER_END}\r\nMore\r\n");
+        let block = format!("{MARKER_START}\nNEW\n{MARKER_END}\n");
+        let out = merge_instructions_block(&original, &block);
+        assert_eq!(out, format!("# Title\r\n\r\n{block}More\r\n"));
     }
 
     /// The real shipped block round-trips cleanly through a refresh.
