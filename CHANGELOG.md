@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `memory_read_page` by-path not-found errors now name the resolved
+  workspace/project scope, making stale or mis-scoped page paths easier to
+  diagnose from MCP clients ([#166]).
+
 ## [1.11.2] - 2026-07-11
 
 ### Fixed
