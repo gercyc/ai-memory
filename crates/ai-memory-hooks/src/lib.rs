@@ -17,6 +17,9 @@
 //!
 //! Privacy strip is a *typed* boundary: there is no way to write an
 //! observation without first passing through `Sanitized::new`.
+//!
+//! This crate does not read process environment directly; server configuration
+//! is resolved once by `ai-memory-cli` and threaded in as typed state.
 
 pub mod log;
 pub mod payload;
@@ -28,7 +31,8 @@ pub mod synth;
 pub use ai_memory_core::{SanitizeConfig, Sanitized, Sanitizer};
 pub use payload::{HookEnvelope, HookEvent};
 pub use router::{
-    DEFAULT_HOOK_INGEST_MAX_IN_FLIGHT, DEFAULT_PROJECT_CACHE_MAX_ENTRIES, HookState, ProjectCache,
-    ProjectCacheStore, SubagentSessionSet, SubagentSessions, hook_router,
+    DEFAULT_HOOK_INGEST_MAX_IN_FLIGHT, DEFAULT_PROJECT_CACHE_MAX_ENTRIES, HookState,
+    IngestRateLimiter, ProjectCache, ProjectCacheStore, SubagentSessionSet, SubagentSessions,
+    hook_router,
 };
 pub use synth::synthesize_session_page;
