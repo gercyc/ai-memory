@@ -55,7 +55,7 @@ async fn make_state(tmp: &TempDir) -> (AdminState, Store) {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     (state, store)
 }
@@ -84,7 +84,7 @@ async fn make_state_with_chain(tmp: &TempDir, chain: AdmissionChain) -> (AdminSt
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     (state, store)
 }
@@ -439,7 +439,7 @@ async fn move_project_carries_source_embedding() {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
 
     // Seed source page (gets a synthetic embedding on write).
@@ -723,7 +723,7 @@ async fn true_move_notifies_admission_with_destination_names() {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     seed_page(&store, &state.wiki, "src", "proj", "notes/a.md", "body a").await;
 
@@ -777,7 +777,7 @@ async fn make_state_with_embedder(tmp: &TempDir) -> (AdminState, Store) {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     (state, store)
 }
@@ -930,7 +930,7 @@ fn build_state(store: &Store, tmp: &TempDir) -> AdminState {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     }
 }
 
@@ -1426,7 +1426,7 @@ async fn true_move_aborts_when_admission_rejects() {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     seed_page(&store, &state.wiki, "src", "proj", "notes/a.md", "body a").await;
 
@@ -1521,7 +1521,7 @@ async fn copy_purge_purge_admission_runs_before_db_destruction() {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     // Pre-seed BOTH sides so move-project takes the copy-purge path (merge
     // into existing dst/proj), not the lossless true-move path.
@@ -1633,7 +1633,7 @@ async fn move_copy_skips_contributors_webhook_but_runs_others() {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     // Pre-seed BOTH sides so the move takes the copy-purge (merge) path.
     seed_page(&store, &state.wiki, "src", "proj", "notes/a.md", "body a").await;
@@ -1870,6 +1870,62 @@ async fn rename_workspace_refreshes_scope_manifests() {
     .unwrap();
     assert!(manifest.contains("workspace: new"), "{manifest}");
     assert!(!manifest.contains("workspace: old"), "{manifest}");
+}
+
+#[tokio::test]
+async fn rename_workspace_manifest_refresh_failure_is_nonfatal_after_db_rename() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_state(&tmp).await;
+    seed_page(&store, &state.wiki, "old", "proj", "notes/a.md", "b").await;
+    state.wiki.backfill_scope_manifests().await.unwrap();
+    let ws_id = store
+        .reader
+        .find_workspace("old".into())
+        .await
+        .unwrap()
+        .expect("workspace exists");
+    let manifest_path = tmp
+        .path()
+        .join("wiki")
+        .join(ws_id.to_string())
+        .join("_meta.md");
+    std::fs::remove_file(&manifest_path).unwrap();
+    std::fs::create_dir(&manifest_path).unwrap();
+
+    let resp = post(
+        state,
+        "/admin/rename-workspace",
+        json!({"from":"old","to":"new"}),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["from"], "old");
+    assert_eq!(body["to"], "new");
+    assert_eq!(body["manifests_refreshed"], 0);
+    assert!(
+        body["manifest_warning"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "response should disclose non-fatal manifest refresh failure: {body}"
+    );
+    assert!(
+        store
+            .reader
+            .find_workspace("new".into())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .reader
+            .find_workspace("old".into())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

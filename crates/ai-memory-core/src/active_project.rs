@@ -175,6 +175,37 @@ impl PerActorMap {
         self.entries.get(key).map(|(ws, proj, _)| (*ws, *proj))
     }
 
+    fn retarget_project(&mut self, project_id: ProjectId, workspace_id: WorkspaceId, now: Instant) {
+        self.purge_expired(now);
+        for (ws, proj, _) in self.entries.values_mut() {
+            if *proj == project_id {
+                *ws = workspace_id;
+            }
+        }
+    }
+
+    fn clear_project(&mut self, project_id: ProjectId, now: Instant) {
+        self.purge_expired(now);
+        self.entries.retain(|_, (_, proj, _)| *proj != project_id);
+    }
+
+    fn clear_workspace(&mut self, workspace_id: WorkspaceId, now: Instant) {
+        self.purge_expired(now);
+        self.entries.retain(|_, (ws, _, _)| *ws != workspace_id);
+    }
+
+    fn contains_project(&mut self, project_id: ProjectId, now: Instant) -> bool {
+        self.purge_expired(now);
+        self.entries
+            .values()
+            .any(|(_, proj, _)| *proj == project_id)
+    }
+
+    fn contains_workspace(&mut self, workspace_id: WorkspaceId, now: Instant) -> bool {
+        self.purge_expired(now);
+        self.entries.values().any(|(ws, _, _)| *ws == workspace_id)
+    }
+
     /// Test-only: live row count in the backing HashMap. Counts all
     /// rows, including ones whose TTL has elapsed (those are dropped
     /// by `purge_expired` on the next read/write). The randomised cap
@@ -355,6 +386,66 @@ impl ActiveProject {
         guard.entries.clear();
     }
 
+    /// Retarget every active entry for `project_id` to `workspace_id`, preserving
+    /// the project id. Used after a lossless cross-workspace move where the
+    /// project row survives and only its workspace changes.
+    pub fn retarget_project_workspace(&self, project_id: ProjectId, workspace_id: WorkspaceId) {
+        {
+            let mut guard = self.single.write().unwrap_or_else(|e| e.into_inner());
+            if let Some((ws, proj)) = guard.as_mut()
+                && *proj == project_id
+            {
+                *ws = workspace_id;
+            }
+        }
+        let mut guard = self.per_actor.write().unwrap_or_else(|e| e.into_inner());
+        guard.retarget_project(project_id, workspace_id, Instant::now());
+    }
+
+    /// Clear every active entry whose project id matches `project_id`.
+    pub fn clear_project(&self, project_id: ProjectId) {
+        {
+            let mut guard = self.single.write().unwrap_or_else(|e| e.into_inner());
+            if guard.map(|(_, proj)| proj) == Some(project_id) {
+                *guard = None;
+            }
+        }
+        let mut guard = self.per_actor.write().unwrap_or_else(|e| e.into_inner());
+        guard.clear_project(project_id, Instant::now());
+    }
+
+    /// Clear every active entry whose workspace id matches `workspace_id`.
+    pub fn clear_workspace(&self, workspace_id: WorkspaceId) {
+        {
+            let mut guard = self.single.write().unwrap_or_else(|e| e.into_inner());
+            if guard.map(|(ws, _)| ws) == Some(workspace_id) {
+                *guard = None;
+            }
+        }
+        let mut guard = self.per_actor.write().unwrap_or_else(|e| e.into_inner());
+        guard.clear_workspace(workspace_id, Instant::now());
+    }
+
+    /// Whether any live active entry references `project_id`.
+    #[must_use]
+    pub fn contains_project(&self, project_id: ProjectId) -> bool {
+        if self.read_single().map(|(_, proj)| proj) == Some(project_id) {
+            return true;
+        }
+        let mut guard = self.per_actor.write().unwrap_or_else(|e| e.into_inner());
+        guard.contains_project(project_id, Instant::now())
+    }
+
+    /// Whether any live active entry references `workspace_id`.
+    #[must_use]
+    pub fn contains_workspace(&self, workspace_id: WorkspaceId) -> bool {
+        if self.read_single().map(|(ws, _)| ws) == Some(workspace_id) {
+            return true;
+        }
+        let mut guard = self.per_actor.write().unwrap_or_else(|e| e.into_inner());
+        guard.contains_workspace(workspace_id, Instant::now())
+    }
+
     /// Test-only: look up only the per-key backing store. Used to prove
     /// eviction in tests without depending on the public fallback semantics.
     #[cfg(test)]
@@ -455,6 +546,74 @@ mod tests {
         ap.clear();
         assert!(ap.get_for(&alice).is_none(), "per-actor entry must be gone");
         assert!(ap.get().is_none(), "single slot must be gone");
+    }
+
+    #[test]
+    fn retarget_project_workspace_updates_single_and_keyed_entries() {
+        let ap = ActiveProject::with_mode(ActiveProjectMode::PerActor);
+        let alice = key_actor("alice", "sA");
+        let bob = key_actor("bob", "sB");
+        let old_ws = WorkspaceId::new();
+        let new_ws = WorkspaceId::new();
+        let moved = ProjectId::new();
+        let other = ProjectId::new();
+
+        ap.set_for(&alice, old_ws, moved);
+        ap.set_for(&bob, old_ws, other);
+        ap.set(old_ws, moved);
+
+        ap.retarget_project_workspace(moved, new_ws);
+
+        assert_eq!(ap.get(), Some((new_ws, moved)));
+        assert_eq!(ap.get_for(&alice), Some((new_ws, moved)));
+        assert_eq!(ap.get_for(&bob), Some((old_ws, other)));
+        assert!(ap.contains_project(moved));
+        assert!(ap.contains_workspace(new_ws));
+    }
+
+    #[test]
+    fn clear_project_drops_matching_single_and_keyed_entries_only() {
+        let ap = ActiveProject::with_mode(ActiveProjectMode::PerActor);
+        let alice = key_actor("alice", "sA");
+        let bob = key_actor("bob", "sB");
+        let ws = WorkspaceId::new();
+        let doomed = ProjectId::new();
+        let kept = ProjectId::new();
+
+        ap.set_for(&alice, ws, doomed);
+        ap.set_for(&bob, ws, kept);
+        ap.set(ws, doomed);
+
+        ap.clear_project(doomed);
+
+        assert!(ap.get().is_none());
+        assert!(ap.get_for(&alice).is_none());
+        assert_eq!(ap.get_for(&bob), Some((ws, kept)));
+        assert!(!ap.contains_project(doomed));
+        assert!(ap.contains_project(kept));
+    }
+
+    #[test]
+    fn clear_workspace_drops_matching_single_and_keyed_entries_only() {
+        let ap = ActiveProject::with_mode(ActiveProjectMode::PerActor);
+        let alice = key_actor("alice", "sA");
+        let bob = key_actor("bob", "sB");
+        let doomed_ws = WorkspaceId::new();
+        let kept_ws = WorkspaceId::new();
+        let p1 = ProjectId::new();
+        let p2 = ProjectId::new();
+
+        ap.set_for(&alice, doomed_ws, p1);
+        ap.set_for(&bob, kept_ws, p2);
+        ap.set(doomed_ws, p1);
+
+        ap.clear_workspace(doomed_ws);
+
+        assert!(ap.get().is_none());
+        assert!(ap.get_for(&alice).is_none());
+        assert_eq!(ap.get_for(&bob), Some((kept_ws, p2)));
+        assert!(!ap.contains_workspace(doomed_ws));
+        assert!(ap.contains_workspace(kept_ws));
     }
 
     #[test]

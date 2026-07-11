@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the unused LLM retry-exhaustion error variant was removed ([#171]).
 
 ### Fixed
+- Admin scope mutations now invalidate both legacy and keyed active-project
+  state plus hook project caches: project moves retarget live active entries,
+  workspace deletes clear affected active/cache entries so deleted scopes are
+  not recreated by the next hook, and workspace rename manifest refresh
+  failures return success with an explicit warning after the committed SQLite
+  rename instead of a misleading 500.
 - `/hook/batch` now skips per-source rate-limited items and continues accepting
   later unrelated sources, returns non-contiguous acknowledgements for new spool
   drains, bounds limiter key bytes, keys by actor+session with deterministic

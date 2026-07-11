@@ -39,7 +39,7 @@ async fn make_state(tmp: &TempDir) -> (AdminState, Store) {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     (state, store)
 }
@@ -327,7 +327,7 @@ async fn rename_project_pages_still_searchable() {
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
         active_project: ai_memory_core::ActiveProject::new(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
 
     let rename_resp = post(
@@ -399,7 +399,7 @@ async fn rename_project_after_purge_returns_404_not_silent_200() {
         bootstrap_lock: state.bootstrap_lock.clone(),
         token_pepper: None,
         active_project: state.active_project.clone(),
-        on_project_moved: None,
+        scope_invalidator: None,
     };
     let purge_resp = post(
         purge_state,

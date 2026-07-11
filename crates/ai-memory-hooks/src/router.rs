@@ -3496,6 +3496,22 @@ mod tests {
         assert_eq!(cache.len(), 2);
     }
 
+    #[test]
+    fn project_cache_store_can_evict_by_workspace_id() {
+        let mut cache = ProjectCacheStore::new(4);
+        let doomed_ws = WorkspaceId::new();
+        let kept_ws = WorkspaceId::new();
+        let key_a = ("/a".into(), String::new(), String::new(), "basename".into());
+        let key_b = ("/b".into(), String::new(), String::new(), "basename".into());
+
+        cache.insert(key_a.clone(), (doomed_ws, ProjectId::new()));
+        cache.insert(key_b.clone(), (kept_ws, ProjectId::new()));
+        cache.retain(|_, (ws, _)| *ws != doomed_ws);
+
+        assert!(!cache.contains_key(&key_a));
+        assert!(cache.contains_key(&key_b));
+    }
+
     /// If the cached project is deleted out from under the router (e.g.
     /// `purge-project` on a live server), the next event must self-heal:
     /// evict the stale slot, recreate the project, and ingest — instead of

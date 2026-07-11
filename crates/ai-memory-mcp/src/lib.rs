@@ -13,5 +13,5 @@ pub mod admin;
 mod server;
 
 pub use actor::actor_from_headers;
-pub use admin::{AdminState, admin_router};
+pub use admin::{AdminState, ScopeInvalidation, ScopeInvalidator, admin_router};
 pub use server::{AiMemoryServer, MEMORY_INSTRUCTIONS};

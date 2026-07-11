@@ -140,10 +140,18 @@ refreshes `_meta.md` scope manifests with `Wiki::backfill_scope_manifests()` and
 returns `manifests_refreshed` plus a post-rename checkpoint when the wiki tree
 changed.
 
+If manifest refresh fails after the SQLite rename has committed, the rename
+still returns `200 OK` with `manifests_refreshed: 0` and a `manifest_warning`
+string instead of reporting a misleading 500. The DB rename is authoritative at
+that point; operators can rerun a manifest refresh or restore from the emitted
+checkpoint if they need to repair `_meta.md` drift.
+
 Failure modes:
 
 - **Source `from` not found** → 404.
 - **`to` name already exists or is invalid** → 422.
+- **Manifest refresh failed after commit** → 200 with `manifest_warning` and
+  committed DB rename.
 
 ### `/admin/delete-workspace`
 

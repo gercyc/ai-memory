@@ -18,6 +18,8 @@
 //! - `POST /admin/restore-page`   — restore one page from a checkpoint.
 //! - `POST /admin/purge-project`  — delete a project and all its data.
 //! - `POST /admin/rename-project` — rename a project (column-only; no files move).
+//! - `POST /admin/rename-workspace` — rename a workspace and refresh scope manifests.
+//! - `POST /admin/delete-workspace` — delete a workspace and all of its projects.
 //! - `POST /admin/move-project`   — move a project into another workspace
 //!   (copy latest pages via the write path, then purge the source).
 //! - `POST /admin/write-page`     — write or update a wiki page atomically.
@@ -30,8 +32,10 @@
 
 use std::sync::Arc;
 
+use std::future::Future;
 use std::io::Seek;
 use std::path::PathBuf;
+use std::pin::Pin;
 
 use ai_memory_consolidate::{
     AutoImproveReviewConfig, AutoImproveTelemetryParams, AutoImproveTelemetryReport, Bootstrap,
@@ -126,13 +130,32 @@ pub struct AdminState {
     /// hook router is attached (admin-only tests).
     pub active_project: ActiveProject,
     /// Optional hook to PROACTIVELY evict the hook router's per-cwd
-    /// `(workspace_id, project_id)` cache for a project that just moved
-    /// workspaces. Called with the moved `project_id` after a successful move
-    /// so the next hook event re-resolves cleanly instead of tripping the
-    /// pairing trigger on a stale cached pair first. Fire-and-forget
-    /// (best-effort); the trigger + router re-resolve are the correctness net.
-    /// `None` when no hook router is attached (stdio / admin-only tests).
-    pub on_project_moved: Option<std::sync::Arc<dyn Fn(ProjectId) + Send + Sync>>,
+    /// `(workspace_id, project_id)` cache after admin scope mutations. Admin
+    /// handlers await this after successful moves/purges/deletes/renames so
+    /// the next hook event re-resolves cleanly instead of racing through a
+    /// stale cached pair. `None` when no hook router is attached (stdio /
+    /// admin-only tests).
+    pub scope_invalidator: Option<ScopeInvalidator>,
+}
+
+/// Async hook-router project-cache invalidator installed by the serve command.
+pub type ScopeInvalidator = Arc<
+    dyn Fn(ScopeInvalidation) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync,
+>;
+
+/// Hook-router project-cache invalidation target for admin scope mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeInvalidation {
+    /// Evict cache entries whose resolved project id matches.
+    Project(ProjectId),
+    /// Evict cache entries whose resolved workspace id matches.
+    Workspace(WorkspaceId),
+}
+
+async fn invalidate_scope_cache(state: &AdminState, target: ScopeInvalidation) {
+    if let Some(evict) = &state.scope_invalidator {
+        evict(target).await;
+    }
 }
 
 /// JSON request body for `POST /admin/bootstrap`.
@@ -2941,6 +2964,9 @@ async fn handle_purge_project(
     }
     state.wiki.dispatch_purge_project(dispatch_ctx.as_ref());
 
+    state.active_project.clear_project(proj_id);
+    invalidate_scope_cache(&state, ScopeInvalidation::Project(proj_id)).await;
+
     let checkpoint = checkpoint_or_warn(&state.wiki, format!("purge-project {label}"));
 
     let report = PurgeProjectReport {
@@ -2987,6 +3013,9 @@ pub struct RenameWorkspaceResult {
     pub checkpoint: Option<String>,
     /// Number of scope manifests refreshed after the SQLite rename.
     pub manifests_refreshed: usize,
+    /// Non-fatal manifest refresh failure after the SQLite rename committed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_warning: Option<String>,
 }
 
 /// `POST /admin/rename-workspace` — rename a workspace (column-only; the
@@ -3009,10 +3038,15 @@ async fn handle_rename_workspace(
         };
         return (status, Json(serde_json::json!({ "error": e.to_string() })));
     }
-    let manifests_refreshed = match state.wiki.backfill_scope_manifests().await {
-        Ok(n) => n,
-        Err(e) => return internal_err(e.to_string()),
+    let (manifests_refreshed, manifest_warning) = match state.wiki.backfill_scope_manifests().await
+    {
+        Ok(n) => (n, None),
+        Err(e) => {
+            warn!(error = %e, "rename-workspace: scope-manifest backfill failed after rename");
+            (0, Some(e.to_string()))
+        }
     };
+    invalidate_scope_cache(&state, ScopeInvalidation::Workspace(ws_id)).await;
     let checkpoint = checkpoint_or_warn(
         &state.wiki,
         format!("rename-workspace {} -> {}", req.from, req.to),
@@ -3022,6 +3056,7 @@ async fn handle_rename_workspace(
         to: req.to.clone(),
         checkpoint,
         manifests_refreshed,
+        manifest_warning,
     };
     (
         StatusCode::OK,
@@ -3155,6 +3190,9 @@ async fn handle_delete_workspace(
         c.partial_failure = true;
     }
     state.wiki.dispatch_purge_workspace(dispatch_ctx.as_ref());
+
+    state.active_project.clear_workspace(ws_id);
+    invalidate_scope_cache(&state, ScopeInvalidation::Workspace(ws_id)).await;
 
     let result = DeleteWorkspaceResult {
         workspace: req.workspace.clone(),
@@ -3473,13 +3511,11 @@ async fn true_move_project(
     // unchanged, only its workspace moved. If a hook had published this project
     // as active, republish it under the destination workspace so the next event
     // resolves cleanly (rather than tripping the pairing trigger first).
-    if state.active_project.get().map(|(_, p)| p) == Some(src_proj) {
-        state.active_project.set(dst_ws, src_proj);
-    }
+    state
+        .active_project
+        .retarget_project_workspace(src_proj, dst_ws);
     // Proactively drop any stale per-cwd cache entry for the moved project.
-    if let Some(evict) = &state.on_project_moved {
-        evict(src_proj);
-    }
+    invalidate_scope_cache(state, ScopeInvalidation::Project(src_proj)).await;
 
     if let Err(e) = state.wiki.backfill_scope_manifests().await {
         warn!(error = %e, "true-move: scope-manifest backfill failed after move");
@@ -3634,7 +3670,7 @@ async fn handle_move_project(
     // the now-stale workspace id (the (workspace_id, project_id) trigger would
     // make it fail, but the operator should consciously opt in). `force: true`
     // proceeds — safe because the move republishes the active pointer below.
-    if !req.force && state.active_project.get().map(|(_, p)| p) == Some(src_proj) {
+    if !req.force && state.active_project.contains_project(src_proj) {
         return (
             StatusCode::CONFLICT,
             Json(serde_json::json!({
@@ -4114,14 +4150,10 @@ async fn copy_purge_merge(
     // The source project_id was just purged; if it was the published active
     // project, the pointer now dangles — clear it so the next hook re-resolves
     // to the (new) project rather than the deleted id.
-    if state.active_project.get().map(|(_, p)| p) == Some(src_proj) {
-        state.active_project.clear();
-    }
+    state.active_project.clear_project(src_proj);
     // Proactively drop any stale per-cwd cache entry for the purged source
     // project (its project_id no longer exists).
-    if let Some(evict) = &state.on_project_moved {
-        evict(src_proj);
-    }
+    invalidate_scope_cache(state, ScopeInvalidation::Project(src_proj)).await;
 
     if let Err(e) = state.wiki.backfill_scope_manifests().await {
         warn!(error = %e, "copy-purge move: scope-manifest backfill failed after move");
@@ -4796,7 +4828,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         });
 
         let resp = router
@@ -4839,7 +4871,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         });
         (tmp, router)
     }
@@ -4871,7 +4903,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         }
     }
 
@@ -5920,7 +5952,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         });
 
         post_write_page(&router, "default", "doomed", "notes/x.md", "bye").await;
@@ -6028,7 +6060,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         });
 
         post_write_page(&router, "default", "doomed", "notes/x.md", "bye").await;
@@ -6129,7 +6161,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         });
 
         post_write_page(&router, "default", "doomed", "notes/x.md", "bye").await;
@@ -6236,7 +6268,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         });
 
         post_write_page_with_actor(
@@ -6293,6 +6325,276 @@ mod tests {
         assert_eq!(json["source_purged"], true);
     }
 
+    #[tokio::test]
+    async fn move_project_guard_and_true_move_retarget_keyed_active_entries() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone())
+            .unwrap()
+            .with_store_reader(store.reader.clone());
+        let active =
+            ai_memory_core::ActiveProject::with_mode(ai_memory_core::ActiveProjectMode::PerActor);
+        let mut state = admin_state_for_store(&tmp, &store, wiki);
+        state.active_project = active.clone();
+        let router = admin_router(state);
+
+        post_write_page(&router, "src", "live", "notes/source.md", "source body").await;
+        let src_ws = store
+            .reader
+            .find_workspace("src".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let src_proj = store
+            .reader
+            .find_project(src_ws, "live".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let actor = ai_memory_core::ActorKey {
+            user: Some("alice".into()),
+            session_id: Some("session-1".into()),
+        };
+        active.set_for(&actor, src_ws, src_proj);
+        active.set(WorkspaceId::new(), ProjectId::new());
+
+        let move_body = serde_json::json!({
+            "from_workspace": "src",
+            "project": "live",
+            "to_workspace": "dst",
+            "confirm": true,
+        });
+        let guarded = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/move-project")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&move_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(guarded.status(), StatusCode::CONFLICT);
+
+        let forced_body = serde_json::json!({
+            "from_workspace": "src",
+            "project": "live",
+            "to_workspace": "dst",
+            "confirm": true,
+            "force": true,
+        });
+        let moved = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/move-project")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&forced_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved.status(), StatusCode::OK);
+        let dst_ws = store
+            .reader
+            .find_workspace("dst".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(active.get_for(&actor), Some((dst_ws, src_proj)));
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_clears_single_and_keyed_active_entries() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone())
+            .unwrap()
+            .with_store_reader(store.reader.clone());
+        let active =
+            ai_memory_core::ActiveProject::with_mode(ai_memory_core::ActiveProjectMode::PerActor);
+        let mut state = admin_state_for_store(&tmp, &store, wiki);
+        state.active_project = active.clone();
+        let router = admin_router(state);
+
+        post_write_page(&router, "doomed-ws", "p", "notes/x.md", "bye").await;
+        let ws = store
+            .reader
+            .find_workspace("doomed-ws".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let proj = store
+            .reader
+            .find_project(ws, "p".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let actor = ai_memory_core::ActorKey {
+            user: Some("alice".into()),
+            session_id: Some("session-1".into()),
+        };
+        active.set_for(&actor, ws, proj);
+        active.set(ws, proj);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/delete-workspace")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "workspace": "doomed-ws",
+                            "force": true,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(active.get().is_none());
+        assert!(active.get_for(&actor).is_none());
+        assert!(!active.contains_workspace(ws));
+    }
+
+    fn recording_scope_invalidator(
+        seen: Arc<std::sync::Mutex<Vec<ScopeInvalidation>>>,
+    ) -> ScopeInvalidator {
+        Arc::new(move |target| {
+            let seen = seen.clone();
+            Box::pin(async move {
+                // Prove admin handlers await the invalidator before returning;
+                // constructing and dropping this future would not record.
+                tokio::task::yield_now().await;
+                seen.lock().unwrap().push(target);
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_awaits_workspace_cache_invalidation() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone())
+            .unwrap()
+            .with_store_reader(store.reader.clone());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut state = admin_state_for_store(&tmp, &store, wiki);
+        state.scope_invalidator = Some(recording_scope_invalidator(seen.clone()));
+        let router = admin_router(state);
+
+        post_write_page(&router, "doomed-ws", "p", "notes/x.md", "bye").await;
+        let ws = store
+            .reader
+            .find_workspace("doomed-ws".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/delete-workspace")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "workspace": "doomed-ws",
+                            "force": true,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![ScopeInvalidation::Workspace(ws)]
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_purge_move_clears_keyed_active_entries_and_awaits_project_invalidation() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone())
+            .unwrap()
+            .with_store_reader(store.reader.clone());
+        let active =
+            ai_memory_core::ActiveProject::with_mode(ai_memory_core::ActiveProjectMode::PerActor);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut state = admin_state_for_store(&tmp, &store, wiki);
+        state.active_project = active.clone();
+        state.scope_invalidator = Some(recording_scope_invalidator(seen.clone()));
+        let router = admin_router(state);
+
+        post_write_page(&router, "src", "merged", "notes/source.md", "source body").await;
+        post_write_page(
+            &router,
+            "dst",
+            "merged",
+            "notes/existing.md",
+            "existing body",
+        )
+        .await;
+        let src_ws = store
+            .reader
+            .find_workspace("src".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let src_proj = store
+            .reader
+            .find_project(src_ws, "merged".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let actor = ai_memory_core::ActorKey {
+            user: Some("alice".into()),
+            session_id: Some("session-1".into()),
+        };
+        active.set_for(&actor, src_ws, src_proj);
+        active.set(src_ws, src_proj);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/move-project")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "from_workspace": "src",
+                            "project": "merged",
+                            "to_workspace": "dst",
+                            "confirm": true,
+                            "force": true,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(active.get().is_none());
+        assert!(active.get_for(&actor).is_none());
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![ScopeInvalidation::Project(src_proj)]
+        );
+    }
+
     // ── user-management endpoints (P1.4) ──────────────────────────
 
     /// Test router that has a token pepper configured (so user-management
@@ -6322,7 +6624,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: Some(pepper),
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         });
         // Wrap in a middleware that stamps the AuthLevel ourselves —
         // the real auth middleware lives in ai-memory-cli, and this
@@ -6881,7 +7183,7 @@ mod tests {
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
             token_pepper: None,
             active_project: ai_memory_core::ActiveProject::new(),
-            on_project_moved: None,
+            scope_invalidator: None,
         });
         // Inject a Root level so we're past the require_root gate;
         // the 503 must come from require_pepper.

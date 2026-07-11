@@ -15,7 +15,7 @@ use ai_memory_hooks::{
     DEFAULT_HOOK_INGEST_MAX_IN_FLIGHT, HookState, ProjectCacheStore, hook_router,
 };
 use ai_memory_llm::{Embedder, LlmProvider, ProviderHealth, build_embedder, build_provider};
-use ai_memory_mcp::{AdminState, AiMemoryServer, admin_router};
+use ai_memory_mcp::{AdminState, AiMemoryServer, ScopeInvalidation, admin_router};
 use ai_memory_store::{
     ApproveAutoImproveProposalResult, AutoImproveProposalOperation, EmbeddingWrite,
     NewAutoImproveProposal, ReaderPool, StageAutoImproveRun, Store, WriterHandle, f32_vec_to_bytes,
@@ -259,18 +259,25 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                     .with_json_response(!args.http_stateful),
             );
             // Shared per-cwd project cache: the hook router owns it; the admin
-            // router gets a fire-and-forget eviction hook so a `move-project`
-            // can proactively drop the moved project's stale entries.
+            // router gets an awaited eviction hook so scope mutations can
+            // proactively drop stale entries before the next hook re-resolves.
             let project_cache: ai_memory_hooks::ProjectCache =
                 std::sync::Arc::new(tokio::sync::Mutex::new(ProjectCacheStore::default()));
-            let on_project_moved: std::sync::Arc<dyn Fn(ProjectId) + Send + Sync> = {
+            let scope_invalidator: ai_memory_mcp::ScopeInvalidator = {
                 let cache = project_cache.clone();
-                std::sync::Arc::new(move |proj: ProjectId| {
-                    let cache = cache.clone();
-                    tokio::spawn(async move {
-                        cache.lock().await.retain(|_, v| v.1 != proj);
-                    });
-                })
+                std::sync::Arc::new(
+                    move |target: ScopeInvalidation| -> std::pin::Pin<
+                        Box<dyn std::future::Future<Output = ()> + Send + 'static>,
+                    > {
+                        let cache = cache.clone();
+                        Box::pin(async move {
+                            cache.lock().await.retain(|_, v| match target {
+                                ScopeInvalidation::Project(proj) => v.1 != proj,
+                                ScopeInvalidation::Workspace(ws) => v.0 != ws,
+                            });
+                        })
+                    },
+                )
             };
             let hooks = hook_router(HookState {
                 workspace_id: ws,
@@ -325,7 +332,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                     .filter(|p| !p.trim().is_empty())
                     .map(|p| ai_memory_store::TokenPepper::new(p.clone())),
                 active_project: active_project.clone(),
-                on_project_moved: Some(on_project_moved),
+                scope_invalidator: Some(scope_invalidator),
             });
             // Multi-rung auth assembly:
             //   - rung 0 (no bearer_token configured) → AuthState::new
