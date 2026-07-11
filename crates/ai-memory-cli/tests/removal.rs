@@ -726,12 +726,10 @@ fn uninstall_dry_run_previews_purge() {
     let normalized_stdout = normalize_path_text(&stdout);
     for sub in ["wiki", "db", "raw"] {
         let p = data.path().join(sub);
-        let expected_suffix = format!("/{sub}");
+        let expected = normalize_path_text(p.display().to_string());
         assert!(
-            normalized_stdout
-                .lines()
-                .any(|line| line.starts_with("would purge ") && line.ends_with(&expected_suffix)),
-            "missing {sub} in: {stdout}"
+            normalized_stdout.contains(&format!("would purge {expected}")),
+            "missing full {sub} path {expected} in: {stdout}"
         );
         // Dry-run must not delete.
         assert!(p.join("f.txt").exists(), "{sub} must be untouched");
