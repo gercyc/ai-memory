@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.4] - 2026-07-11
+
 ### Fixed
 - Scheduled forget sweep, rule-based lint, and opt-in embedding backfill now
   iterate every existing workspace/project scope instead of only the project
@@ -1747,7 +1749,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.11.3...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.11.4...HEAD
+[1.11.4]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.11.4
 [1.11.3]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.11.3
 [1.11.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.11.2
 [1.11.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.11.1
