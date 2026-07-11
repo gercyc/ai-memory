@@ -55,6 +55,23 @@ calling `/hook` directly. For a third-party bridge that has its own
 lifecycle vocabulary, keep the core `event` query param on one of
 ai-memory's canonical events when possible:
 
+### Community-maintained Hermes Agent plugin
+
+ai-memory does not currently ship a first-party Hermes Agent installer,
+but a community-maintained
+[`ai-memory-hermes-plugin`](https://github.com/MrLuciano/ai-memory-hermes-plugin)
+is available. Treat it as a third-party bridge: verify the plugin's
+documented Hermes and ai-memory version matrix, install/update/uninstall
+behavior, platform coverage, and secret handling before enabling it on a
+live ai-memory server. In particular, bearer tokens and endpoint settings
+should stay in environment or local config references rather than generated
+plugin source files.
+
+The same lifecycle guidance below applies to Hermes or any other external
+bridge: map known events onto ai-memory's canonical hook events where
+possible, and use extension metadata for source-specific events instead of
+expanding ai-memory's stored event enum for one client.
+
 ```bash
 curl -X POST \
   'http://127.0.0.1:49374/hook?event=user-prompt&agent=other' \

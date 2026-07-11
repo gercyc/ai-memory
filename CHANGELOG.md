@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Documented the community-maintained Hermes Agent plugin as a third-party
+  bridge rather than first-party ai-memory support, with compatibility and
+  secret-handling cautions ([#172]).
 - `/admin/delete-workspace` now runs `purge_workspace` admission before
   destructive work, reports filesystem partial failures in `files_failed`, and
   notifies non-blocking mirrors after durable deletion; `/admin/rename-workspace`
