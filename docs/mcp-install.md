@@ -19,9 +19,9 @@
 This page documents how to register ai-memory as an MCP server with
 agent CLIs beyond the README quick start.
 
-Claude Code, OpenAI Codex, Devin CLI, Cursor, Gemini CLI, Antigravity CLI, Grok Build CLI, Zero, OpenClaw, OpenCode, and
+Claude Code, OpenAI Codex, Devin CLI, Cursor, Gemini CLI, Antigravity CLI, Grok Build CLI, Zero, Kimi Code, OpenClaw, OpenCode, and
 OMP have automatic capture integrations (shell/PowerShell hooks for
-Claude Code / Codex / Devin CLI / Cursor / Gemini CLI / Antigravity CLI / Grok Build CLI, TypeScript plugin/extension
+Claude Code / Codex / Devin CLI / Cursor / Gemini CLI / Antigravity CLI / Grok Build CLI / Kimi Code, TypeScript plugin/extension
 files for OpenClaw / OpenCode / OMP) and are covered in the
 [main README](../README.md#quick-start). On native Windows, Claude Code uses
 Git Bash `.sh` hooks rather than the PowerShell default used by other
@@ -508,6 +508,63 @@ fill both in:
   sessions' remaining events are attributed to it (same graceful-degradation
   stance as the single-slot `/handoff` fallback). A payload that does carry
   its own `session_id` always wins over both.
+
+## Kimi Code
+
+**Status:** ✅ MCP supported. ✅ Lifecycle hooks supported via
+`ai-memory install-hooks --agent kimi-code --apply`.
+
+**Config file (MCP):** `~/.kimi-code/mcp.json`
+(`$KIMI_CODE_HOME/mcp.json` when `KIMI_CODE_HOME` is set).
+
+Kimi Code treats any `mcpServers` entry with a `url` field and no
+`transport` field as a streamable-HTTP server, so the entry needs no
+transport key:
+
+```bash
+ai-memory install-mcp --client kimi-code --apply \
+    --server-url "http://homelab:49374/mcp" --auth-token "$TOKEN"
+```
+
+which merges:
+
+```json
+{
+  "mcpServers": {
+    "ai-memory": {
+      "url": "http://homelab:49374/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+**Config file (hooks):** `~/.kimi-code/config.toml` (same `$KIMI_CODE_HOME`
+base). Kimi Code stores hooks as `[[hooks]]` array entries in the same TOML
+file that holds its provider/model settings; `install-hooks` merges
+ai-memory's entries and preserves everything else:
+
+```bash
+ai-memory install-hooks --agent kimi-code --apply \
+    --server-url "http://homelab:49374" --auth-token "$TOKEN"
+```
+
+The installed entries cover 9 events — `SessionStart`, `SessionEnd`,
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`,
+`SubagentStop`, and `PreCompact` — and call the staged scripts under
+`~/.local/share/ai-memory/hooks/kimi-code/`. Capture is fire-and-forget; a
+pending handoff is injected at `SessionStart` via the hook's stdout (Kimi
+Code appends stdout to context on exit 0), the same pattern as Gemini CLI.
+
+**Gotchas:**
+- Do not add a `transport` field for HTTP servers: `url` alone means
+  streamable HTTP; `transport: "sse"` selects the legacy SSE transport.
+- Hook entries accept only `event`, `matcher`, `command`, and `timeout`
+  (seconds, 1-600, default 30). Any extra field makes Kimi Code fail to load
+  the entire `config.toml`, so prefer `install-hooks --apply` over hand
+  edits.
+- Kimi Code runs rules with an identical `command` only once; ai-memory's
+  entries use one script per event, so all 9 fire independently.
 
 ## OpenClaw
 

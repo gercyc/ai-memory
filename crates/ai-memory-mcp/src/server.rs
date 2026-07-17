@@ -2453,6 +2453,7 @@ impl AiMemoryServer {
                 "antigravity_cli": "AGENTS.md",
                 "zero": "AGENTS.md",
                 "devin": "AGENTS.md",
+                "kimi_code": "AGENTS.md",
                 "default": "AGENTS.md"
             },
             "managed_skills": managed_skills,
@@ -3284,6 +3285,10 @@ mod tests {
         );
         assert_eq!(
             response["agent_filenames"]["devin"].as_str().unwrap(),
+            "AGENTS.md"
+        );
+        assert_eq!(
+            response["agent_filenames"]["kimi_code"].as_str().unwrap(),
             "AGENTS.md"
         );
         // Proposed symmetrically alongside the devin assertion above:

@@ -36,9 +36,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::cli::{AgentChoice, SetupAgentArgs};
 use crate::commands::render_shared::{
-    ANTIGRAVITY_LIFECYCLE_EVENTS, ANTIGRAVITY_TOOL_EVENTS, CODEX_PROFILE, CURSOR_PROFILE,
-    GEMINI_PROFILE, build_claude_code_payload, build_devin_payload, build_grok_payload,
-    hook_script_for_current_platform,
+    ANTIGRAVITY_LIFECYCLE_EVENTS, ANTIGRAVITY_TOOL_EVENTS, CLAUDE_CODE_EVENTS, CODEX_PROFILE,
+    CURSOR_PROFILE, GEMINI_PROFILE, build_claude_code_payload, build_devin_payload,
+    build_grok_payload, hook_script_for_current_platform,
 };
 use crate::config::{Config, DEFAULT_SERVER_URL};
 
@@ -141,6 +141,11 @@ pub fn run(config: &Config, args: SetupAgentArgs) -> Result<()> {
             &args,
             &[&ANTIGRAVITY_TOOL_EVENTS, &ANTIGRAVITY_LIFECYCLE_EVENTS],
         ),
+        // Kimi Code's nine hook events mirror Claude Code's vocabulary
+        // exactly; its `[[hooks]]` TOML merge into config.toml (shared
+        // with user provider/model settings) is owned by install-hooks
+        // apply-mode, so print-mode stays a conservative script listing.
+        AgentChoice::KimiCode => emit_other(&emit_root, agent_sub, &args, &[&CLAUDE_CODE_EVENTS]),
         AgentChoice::OpenCode
         | AgentChoice::Pi
         | AgentChoice::Omp
@@ -604,5 +609,37 @@ mod tests {
             !rendered.contains("subagent-start") && !rendered.contains("subagent-stop"),
             "Gemini has no subagent hook events; setup-agent must not print nonexistent scripts"
         );
+    }
+
+    #[test]
+    fn kimi_code_manual_script_paths_cover_claude_code_event_set() {
+        // Kimi Code's hook vocabulary (SessionStart, SessionEnd,
+        // UserPromptSubmit, PreToolUse, PostToolUse, Stop, SubagentStart,
+        // SubagentStop, PreCompact) mirrors Claude Code's nine events.
+        let root = Path::new("/hooks/kimi-code");
+        let paths = event_script_paths(root, &[&CLAUDE_CODE_EVENTS]);
+        let rendered = paths
+            .iter()
+            .map(|path| path.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for script in [
+            "session-start",
+            "session-end",
+            "user-prompt-submit",
+            "pre-tool-use",
+            "post-tool-use",
+            "pre-compact",
+            "stop",
+            "subagent-start",
+            "subagent-stop",
+        ] {
+            assert!(
+                rendered.contains(script),
+                "Kimi Code setup-agent must list {script}; got:\n{rendered}"
+            );
+        }
+        assert_eq!(paths.len(), 9);
     }
 }

@@ -35,6 +35,7 @@
 | Antigravity CLI | Supported | MCP config (`serverUrl`) + lifecycle hooks (`agy` alias). |
 | Grok Build CLI | Hooks | Lifecycle hooks via `install-hooks --agent grok` (`~/.grok/hooks/ai-memory.json`, Grok-specific hook bundle, native `--agent grok`). Capture works; no handoff injection — Grok ignores `SessionStart` stdout, so recover handoffs via MCP `memory_handoff_accept`. |
 | Zero | Supported | `install-mcp --client zero` (native HTTP + bearer in `~/.config/zero/config.json`) + lifecycle hooks via `install-hooks --agent zero --apply` (exec-form native commands in `~/.config/zero/hooks.json`, JSON payload on stdin, no shell). Capture works incl. specialist (subagent) events; no handoff injection — Zero discards `sessionStart` stdout, so recover handoffs via MCP `memory_handoff_accept`. |
+| Kimi Code | Supported | MCP config (`url` entry in `~/.kimi-code/mcp.json`) + lifecycle hooks (`[[hooks]]` in `~/.kimi-code/config.toml`, 9 events including subagent start/stop); both paths honor `$KIMI_CODE_HOME`. Handoffs inject via `SessionStart` stdout. |
 | VS Code Copilot | MCP-only | `.vscode/mcp.json` for Copilot agent mode; no lifecycle hooks (Copilot does not expose them yet). |
 | Hermes Agent | Community | A community-maintained [`ai-memory-hermes-plugin`](https://github.com/MrLuciano/ai-memory-hermes-plugin) is available. It is not part of ai-memory's first-party install surface; review its compatibility matrix, install/uninstall scripts, and secret handling before using it. |
 | LLM/auth providers | Supported | Anthropic, OpenAI, OpenAI OAuth/Codex, GitHub Copilot, Gemini, OpenCode Zen/Go, OpenAI-compatible endpoints, and generic OIDC device auth for native hooks. |
@@ -92,9 +93,9 @@ priors are at the [bottom](#influences-and-prior-art).
   mode. Mounted on the same axum server as MCP.
 - **Multi-agent + multi-machine ready.** Supported clients: Claude
   Code, Codex, Devin CLI, OpenCode, Cursor, Claude Desktop (via `mcp-remote`),
-  Gemini CLI, Antigravity CLI, Grok Build CLI, OpenClaw, Oh My Pi / OMP
-  (`omp` / `oh-my-pi`), Pi via generated bridge extension, and VS Code GitHub
-  Copilot agent mode
+  Gemini CLI, Antigravity CLI, Grok Build CLI, Kimi Code, OpenClaw, Oh My Pi
+  / OMP (`omp` / `oh-my-pi`), Pi via generated bridge extension, and VS Code
+  GitHub Copilot agent mode
   (MCP-only, workspace `.vscode/mcp.json`).
   Server runs local (loopback) OR on a homelab box (LAN/VPN/cloud)
   with bearer-token auth. Shared servers can opt into
@@ -270,7 +271,7 @@ docker run -d --name ai-memory \
 # 3. Wire your agent CLI in two commands. The wrapper takes care of
 #    mounts + auto-detecting ~/.claude/settings.json. Re-run with
 #    `--agent codex`, `--agent devin`, `--agent opencode`, `--agent gemini-cli`,
-#    `--agent omp`, `--agent oh-my-pi`, `--client cursor`,
+#    `--agent kimi-code`, `--agent omp`, `--agent oh-my-pi`, `--client cursor`,
 #    `--client gemini-cli`, etc.
 #    for additional agents; full list in docs/install.md.
 ai-memory install-mcp   --client claude-code --apply
@@ -342,7 +343,7 @@ one matching entry.
   markered snippet and managed Agent Skills from the same binary-owned assets.
 
 For Codex, Devin CLI, OpenCode, OMP, Cursor, Claude Desktop, Gemini CLI,
-Antigravity CLI, Grok Build CLI, OpenClaw, VS Code Copilot,
+Antigravity CLI, Grok Build CLI, Kimi Code, OpenClaw, VS Code Copilot,
 curl-based hook installs, source builds,
 CLI env vars, and the full subcommand reference, see [`docs/install.md`](docs/install.md).
 

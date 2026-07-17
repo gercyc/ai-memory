@@ -39,6 +39,8 @@ enum RewriteOp {
     /// Zero hooks.json — `hooks` array entries whose `id` carries the
     /// `ai-memory-` prefix.
     ZeroHooksJson,
+    /// Kimi Code `[[hooks]]` rules inside config.toml.
+    KimiCodeHooksToml,
     /// MCP JSON config for one client shape.
     McpJson(McpClient),
     /// Codex TOML MCP config.
@@ -215,6 +217,19 @@ fn build_plan(args: &UninstallArgs) -> anyhow::Result<Vec<PlannedChange>> {
             );
         }
 
+        let kimi_code = install_hooks::kimi_code_config_path()?;
+        if kimi_code.exists() {
+            let content = std::fs::read_to_string(&kimi_code)
+                .with_context(|| format!("reading {}", kimi_code.display()))?;
+            let removal = strip_kimi_code_hooks(&content)?;
+            push_rewrite(
+                &mut plan,
+                kimi_code,
+                removal.removed_events,
+                RewriteOp::KimiCodeHooksToml,
+            );
+        }
+
         let plugin = install_hooks::opencode_plugin_path()?;
         push_generated_delete(&mut plan, plugin, DeleteKind::OpenCodePlugin);
 
@@ -258,6 +273,7 @@ fn build_plan(args: &UninstallArgs) -> anyhow::Result<Vec<PlannedChange>> {
             Zero,
             VsCodeCopilot,
             Devin,
+            KimiCode,
         ] {
             let Ok(path) = install_mcp::mcp_config_path(client) else {
                 continue;
@@ -407,6 +423,7 @@ fn apply_change(change: &PlannedChange, name: Option<&str>, url: &str) -> anyhow
                             strip_antigravity_hooks(&out)?.new_content
                         }
                         RewriteOp::ZeroHooksJson => strip_zero_hooks(&out)?.new_content,
+                        RewriteOp::KimiCodeHooksToml => strip_kimi_code_hooks(&out)?.new_content,
                         RewriteOp::McpJson(client) => strip_mcp_json(&out, client, name, url)?.0,
                         RewriteOp::McpToml => strip_mcp_toml(&out, name, url)?.0,
                     };
@@ -764,6 +781,48 @@ fn strip_antigravity_hooks(content: &str) -> Result<HookRemoval> {
     })
 }
 
+/// Remove ai-memory's `[[hooks]]` rules from Kimi Code's config.toml. The
+/// same file holds the user's providers/model settings and any third-party
+/// rules, so ownership is proven by the hook command signature alone and
+/// everything else round-trips untouched.
+fn strip_kimi_code_hooks(content: &str) -> Result<HookRemoval> {
+    let mut removed_events = Vec::new();
+    let new_content = mutate_toml(content, |doc| {
+        let Some(hooks) = doc
+            .get_mut("hooks")
+            .and_then(toml_edit::Item::as_array_of_tables_mut)
+        else {
+            return Ok(());
+        };
+        for index in (0..hooks.len()).rev() {
+            let Some(table) = hooks.get_mut(index) else {
+                continue;
+            };
+            let ours = table
+                .get("command")
+                .and_then(toml_edit::Item::as_str)
+                .is_some_and(hook_command_is_ours);
+            if !ours {
+                continue;
+            }
+            let event = table
+                .get("event")
+                .and_then(toml_edit::Item::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            removed_events.push(format!("kimi-code.{event}"));
+            hooks.remove(index);
+        }
+        Ok(())
+    })?;
+    // Index-descending removal collects events in reverse document order.
+    removed_events.reverse();
+    Ok(HookRemoval {
+        new_content,
+        removed_events,
+    })
+}
+
 fn generated_file_is_ours(path: &Path, kind: DeleteKind) -> bool {
     let Ok(content) = std::fs::read_to_string(path) else {
         return false;
@@ -831,6 +890,7 @@ fn mcp_servers_path(client: McpClient) -> Option<&'static [&'static str]> {
         | McpClient::GeminiCli
         | McpClient::Omp
         | McpClient::AntigravityCli
+        | McpClient::KimiCode
         | McpClient::Devin => Some(&["mcpServers"]),
         McpClient::OpenCode => Some(&["mcp"]),
         McpClient::Openclaw | McpClient::Zero => Some(&["mcp", "servers"]),
@@ -1613,5 +1673,94 @@ mod tests {
         let (_out, removed) =
             strip_mcp_toml(content, Some("ai-memory"), "http://127.0.0.1:49374/mcp").unwrap();
         assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn strip_kimi_code_hooks_removes_only_ours_preserving_config() {
+        let content = r#"model = "kimi-k2"
+
+[providers.kimi]
+api_key = "sk-user-key"
+
+[[hooks]]
+event = "SessionStart"
+command = "AI_MEMORY_HOOK_URL=http://h /x/session-start.sh"
+
+[[hooks]]
+event = "SessionStart"
+matcher = "*"
+command = "/usr/bin/user-session-start"
+timeout = 10
+
+[[hooks]]
+event = "Stop"
+command = "'/usr/local/bin/ai-memory' hook --event stop --agent kimi-code --server-url http://h:49374"
+"#;
+        let out = strip_kimi_code_hooks(content).unwrap();
+        assert_eq!(
+            out.removed_events,
+            vec![
+                "kimi-code.SessionStart".to_string(),
+                "kimi-code.Stop".to_string()
+            ]
+        );
+        let doc: toml_edit::DocumentMut = out.new_content.parse().unwrap();
+        assert_eq!(doc.get("model").and_then(|m| m.as_str()), Some("kimi-k2"));
+        assert_eq!(
+            doc.get("providers")
+                .and_then(|p| p.get("kimi"))
+                .and_then(|k| k.get("api_key"))
+                .and_then(|k| k.as_str()),
+            Some("sk-user-key")
+        );
+        let hooks = doc
+            .get("hooks")
+            .and_then(toml_edit::Item::as_array_of_tables)
+            .expect("third-party hooks must survive");
+        assert_eq!(hooks.len(), 1, "only ai-memory rules removed");
+        let kept = hooks.get(0).unwrap();
+        assert_eq!(
+            kept.get("command").and_then(|c| c.as_str()),
+            Some("/usr/bin/user-session-start")
+        );
+        assert_eq!(kept.get("matcher").and_then(|m| m.as_str()), Some("*"));
+        assert_eq!(kept.get("timeout").and_then(|t| t.as_integer()), Some(10));
+    }
+
+    #[test]
+    fn strip_kimi_code_hooks_all_ours_leaves_no_hooks_section() {
+        let content = "[providers.kimi]\napi_key = \"sk-user-key\"\n\n[[hooks]]\nevent = \"Stop\"\ncommand = \"AI_MEMORY_HOOK_URL=x /a/stop.sh\"\n";
+        let out = strip_kimi_code_hooks(content).unwrap();
+        assert_eq!(out.removed_events, vec!["kimi-code.Stop".to_string()]);
+        assert!(
+            !out.new_content.contains("hooks"),
+            "emptied [[hooks]] array must serialize to nothing: {}",
+            out.new_content
+        );
+        assert!(out.new_content.contains("[providers.kimi]"));
+    }
+
+    #[test]
+    fn strip_kimi_code_hooks_no_hooks_key_is_noop() {
+        let content = "model = \"kimi-k2\"\n";
+        let out = strip_kimi_code_hooks(content).unwrap();
+        assert!(out.removed_events.is_empty());
+        assert_eq!(out.new_content, content);
+    }
+
+    #[test]
+    fn strip_mcp_kimi_code_root_servers() {
+        let content = r#"{"mcpServers":{"ai-memory":{"url":"http://127.0.0.1:49374/mcp","headers":{"X-Token":"t"}},"other":{"url":"http://x"}}}"#;
+        let (out, removed) = strip_mcp_json(
+            content,
+            McpClient::KimiCode,
+            Some("ai-memory"),
+            "http://127.0.0.1:49374/mcp",
+        )
+        .unwrap();
+        assert_eq!(removed, vec!["ai-memory".to_string()]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["mcpServers"].get("ai-memory").is_none());
+        assert!(v["mcpServers"].get("other").is_some());
     }
 }

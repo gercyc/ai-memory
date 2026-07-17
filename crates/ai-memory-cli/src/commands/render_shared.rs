@@ -47,6 +47,27 @@ pub(crate) const CLAUDE_CODE_EVENTS: [(&str, &str); 9] = [
     ("SubagentStop", "subagent-stop.sh"),
 ];
 
+/// Kimi Code lifecycle events ai-memory hooks. Same 9-event vocabulary
+/// as Claude Code (`CLAUDE_CODE_EVENTS`), but Kimi Code wires hooks as
+/// `[[hooks]]` entries in `$KIMI_CODE_HOME/config.toml` (TOML) instead of
+/// a JSON settings file, so its payload comes from
+/// [`kimi_code_hook_commands`] rather than the JSON hook shapes.
+///
+/// Adding a hook event means updating this list AND adding the matching
+/// `.sh` and `.ps1` files under `hooks/kimi-code/`. The install-hooks
+/// parity test fails if the bundle drifts.
+pub(crate) const KIMI_CODE_EVENTS: [(&str, &str); 9] = [
+    ("SessionStart", "session-start.sh"),
+    ("UserPromptSubmit", "user-prompt-submit.sh"),
+    ("PreToolUse", "pre-tool-use.sh"),
+    ("PostToolUse", "post-tool-use.sh"),
+    ("PreCompact", "pre-compact.sh"),
+    ("Stop", "stop.sh"),
+    ("SessionEnd", "session-end.sh"),
+    ("SubagentStart", "subagent-start.sh"),
+    ("SubagentStop", "subagent-stop.sh"),
+];
+
 /// Devin lifecycle events ai-memory hooks. Each pair is
 /// `(event-name-in-Devin-settings, POSIX hook-script-filename)`.
 ///
@@ -564,6 +585,55 @@ fn build_hook_payload(
     context: HookCommandContext<'_>,
 ) -> serde_json::Value {
     build_hook_payload_for_platform(events, emit_root, server_url, auth_token, shape, context)
+}
+
+/// Build the `(event, command)` pairs behind Kimi Code's `[[hooks]]`
+/// TOML entries. Kimi Code hook entries accept only `event` / `matcher`
+/// / `command` / `timeout` — any other key makes the whole config.toml
+/// fail to load — so callers emit exactly `event` + `command` and leave
+/// the rest at Kimi Code's defaults (no `matcher` = match everything;
+/// no `timeout` = 30s). Commands point at the staged script bundle via
+/// the same `hook_command` mounting the other script-based agents use
+/// (`.sh` on POSIX, `.ps1` on Windows).
+pub(crate) fn kimi_code_hook_commands(
+    emit_root: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: Option<&Path>,
+    project_strategy: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    kimi_code_hook_commands_for_platform(
+        emit_root,
+        server_url,
+        auth_token,
+        HookCommandPlatform::current(),
+        data_dir,
+        project_strategy,
+    )
+}
+
+fn kimi_code_hook_commands_for_platform(
+    emit_root: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    platform: HookCommandPlatform,
+    data_dir: Option<&Path>,
+    project_strategy: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    KIMI_CODE_EVENTS
+        .iter()
+        .map(|(event, script)| {
+            let script = script_for_platform(script, platform);
+            let abs = emit_root.join(script.as_ref());
+            let command = hook_command(
+                &abs,
+                server_url,
+                auth_token,
+                HookCommandContext::new(platform, "kimi-code", data_dir, project_strategy),
+            );
+            (*event, command)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1756,6 +1826,54 @@ mod tests {
                 "missing Antigravity event {expected}"
             );
         }
+    }
+
+    #[test]
+    fn kimi_code_commands_cover_all_events_with_script_paths() {
+        let root = PathBuf::from("/host/hooks/kimi-code");
+        let commands = kimi_code_hook_commands_for_platform(
+            &root,
+            "http://localhost:49374",
+            Some("tok"),
+            HookCommandPlatform::Posix,
+            None,
+            None,
+        );
+        assert_eq!(commands.len(), KIMI_CODE_EVENTS.len());
+        let events: Vec<&str> = commands.iter().map(|(event, _)| *event).collect();
+        for (event, script) in KIMI_CODE_EVENTS {
+            assert!(events.contains(&event), "missing Kimi Code event {event}");
+            let (_, cmd) = commands.iter().find(|(e, _)| *e == event).unwrap();
+            assert!(
+                cmd.contains(&format!("/host/hooks/kimi-code/{script}")),
+                "{event}: command must point at the staged script: {cmd}"
+            );
+        }
+        let (_, session_start) = &commands[0];
+        assert!(
+            session_start.contains("AI_MEMORY_HOOK_URL=http://localhost:49374"),
+            "{session_start}"
+        );
+        assert!(
+            session_start.contains("AI_MEMORY_AUTH_TOKEN=tok"),
+            "{session_start}"
+        );
+    }
+
+    #[test]
+    fn kimi_code_commands_windows_use_ps1_scripts() {
+        let root = PathBuf::from(r"C:\hooks\kimi-code");
+        let commands = kimi_code_hook_commands_for_platform(
+            &root,
+            "http://h:49374",
+            None,
+            HookCommandPlatform::Windows,
+            None,
+            None,
+        );
+        let (_, cmd) = &commands[0];
+        assert!(cmd.contains("session-start.ps1"), "{cmd}");
+        assert!(!cmd.contains("session-start.sh"), "{cmd}");
     }
 
     #[test]

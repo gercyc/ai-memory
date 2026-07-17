@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Kimi Code CLI is now a supported MCP + lifecycle-hook integration
+  (`--client kimi-code` / `--agent kimi-code`, alias `kimi`). `install-mcp`
+  merges an `mcpServers` entry into `~/.kimi-code/mcp.json` with a plain `url`
+  (Kimi Code treats `url` with no `transport` field as streamable HTTP) plus
+  optional bearer `headers`. `install-hooks` merges `[[hooks]]` entries into
+  `~/.kimi-code/config.toml`, preserving the provider/model settings the same
+  file holds, and covers 9 events: `SessionStart`, `SessionEnd`,
+  `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`,
+  `SubagentStop`, and `PreCompact`. Both paths honor `$KIMI_CODE_HOME`.
+  Handoff injection happens at `SessionStart` through hook stdout, which Kimi
+  Code appends to the model context; `setup-agent` and `uninstall` handle the
+  new agent like the other first-class integrations.
+
 ### Changed
 - One-shot client commands (`rename-project`, `status`, `write-page`, …) no
   longer print the "cannot write log files … falling back" warning when the
