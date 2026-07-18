@@ -20,16 +20,23 @@ This page documents how to register ai-memory as an MCP server with
 agent CLIs beyond the README quick start.
 
 Claude Code, OpenAI Codex, Devin CLI, Cursor, Gemini CLI, Antigravity CLI, Grok Build CLI, Zero, Kimi Code, OpenClaw, OpenCode, and
-OMP have automatic capture integrations (shell/PowerShell hooks for
-Claude Code / Codex / Devin CLI / Cursor / Gemini CLI / Antigravity CLI / Grok Build CLI / Kimi Code, TypeScript plugin/extension
-files for OpenClaw / OpenCode / OMP) and are covered in the
-[main README](../README.md#quick-start). On native Windows, Claude Code uses
-Git Bash `.sh` hooks rather than the PowerShell default used by other
-script-hook agents. Grok and Zero capture lifecycle events, but both ignore
+OMP have automatic capture integrations (host-native commands for supported
+local profiles, plus generated TypeScript plugin/extension files for OpenClaw /
+OpenCode / OMP) and are covered in the [main README](../README.md#quick-start).
+Claude Code may use its supported Windows exec form; other agents use native
+single command strings according to their hook schema. PowerShell/Git Bash
+script bundles are compatibility fallbacks and do not enforce capture-policy
+v1. Grok and Zero capture lifecycle events, but both ignore
 SessionStart stdout, so ai-memory does not auto-inject handoffs for them.
 SessionStart handoff injection works only for clients that consume startup-hook
 stdout (or their equivalent context-injection result); Grok and Zero must call
 `memory_handoff_accept` when resuming.
+
+Capture exclusions are separate from MCP registration. Native hook commands and
+generated OpenCode/OMP/Pi/OpenClaw integrations enforce `[capture]
+ignore_paths`; legacy shell/PowerShell and remote-only/Docker script bundles do
+not. Reinstall/refresh an existing hook or plugin to gain it; see
+[Capture exclusions](marker-file.md#capture-exclusions).
 
 Claude Desktop and VS Code Copilot are **MCP-only** here: they expose
 long-term memory to their LLMs via ai-memory's MCP tools
@@ -608,10 +615,13 @@ ai-memory install-hooks --agent kimi-code --apply \
 
 The installed entries cover 9 events — `SessionStart`, `SessionEnd`,
 `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`,
-`SubagentStop`, and `PreCompact` — and call the staged scripts under
-`~/.local/share/ai-memory/hooks/kimi-code/`. Capture is fire-and-forget; a
-pending handoff is injected at `SessionStart` via the hook's stdout (Kimi
-Code appends stdout to context on exit 0), the same pattern as Gemini CLI.
+`SubagentStop`, and `PreCompact` — with a Kimi Code-specific script bundle /
+native `ai-memory hook --event … --agent kimi-code` commands (native is the
+default for local installs; the staged scripts under
+`~/.local/share/ai-memory/hooks/kimi-code/` are the compatibility fallback).
+Capture is fire-and-forget; a pending handoff is injected at `SessionStart`
+via the hook's stdout (Kimi Code appends stdout to context on exit 0), the
+same pattern as Gemini CLI.
 
 **Gotchas:**
 - Do not add a `transport` field for HTTP servers: `url` alone means
@@ -621,7 +631,7 @@ Code appends stdout to context on exit 0), the same pattern as Gemini CLI.
   the entire `config.toml`, so prefer `install-hooks --apply` over hand
   edits.
 - Kimi Code runs rules with an identical `command` only once; ai-memory's
-  entries use one script per event, so all 9 fire independently.
+  entries use a distinct command per event, so all 9 fire independently.
 
 ## OpenClaw
 

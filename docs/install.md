@@ -368,6 +368,16 @@ then stages runnable copies under `~/.local/share/ai-memory/hooks/<agent>/` so
 the agent can execute files owned by your user. Re-run `install-hooks --apply`
 after package upgrades to refresh those staged copies.
 
+### Capture-policy capability and refresh
+
+`[capture] ignore_paths` is enforced only by native `ai-memory hook` commands
+and generated OpenCode/OMP/Pi/OpenClaw integrations. Local installers select
+native commands where supported; legacy `.sh`/`.ps1` hooks and remote-only or
+Docker script bundles do not enforce it. Re-run `install-hooks --agent <agent>
+--apply` or refresh/reinstall generated plugins after upgrading; installer
+capability output reflects the selected integration. See the canonical
+[capture exclusions reference](marker-file.md#capture-exclusions).
+
 Native `ai-memory hook --event ...` commands spool events locally. Session start
 does a short bounded cleanup drain before fetching a handoff; cancellation-prone
 boundary events (`stop`, `pre-compact`, and `session-end`) start a detached
@@ -492,16 +502,14 @@ Claude Desktop is MCP-only today. Claude Code, Codex, Devin CLI, OpenCode,
 OMP, Cursor, Gemini CLI, Antigravity CLI, Grok Build CLI, Kimi Code, and OpenClaw have lifecycle capture paths through
 `install-hooks`.
 
-> **Two-step hook install pattern.** Claude Code, Codex, Cursor,
-> Gemini CLI, Antigravity CLI, Grok Build CLI, Kimi Code, and Devin CLI use shell/PowerShell hook scripts: (1) `docker cp` the
-> bundled scripts to your home dir, (2) `docker run --rm install-hooks`
-> to render the config snippet.
-> On native Windows, Claude Code is the exception to the PowerShell default:
-> it uses Claude exec form (`command` = real `ai-memory.exe`, `args` = argv
-> tokens for `hook --event ...`) by default. Set
-> `AI_MEMORY_HOOK_PLATFORM=windows-bash` before `install-hooks` to opt back into
-> Git Bash `bash -c` commands for the `.sh` scripts, including for older Claude
-> Code builds that do not support exec form.
+> **Hook install pattern.** Local supported profiles default to host-native
+> commands. Claude Code may use its supported Windows exec form (`command` =
+> real `ai-memory.exe`, `args` = argv tokens for `hook --event ...`); other
+> agents use native single command strings according to their hook schema.
+> PowerShell/Git Bash script bundles are compatibility fallbacks and do not
+> enforce capture-policy v1. Remote-only/Docker script installs still use the
+> two-step path: (1) `docker cp` bundled scripts to your home dir, (2)
+> `docker run --rm install-hooks` renders the config snippet.
 > OpenClaw, OpenCode, and OMP are different: they use generated
 > TypeScript plugin/extension files, so no shell-script extraction is
 > needed for those clients.
@@ -585,12 +593,15 @@ ai-memory install-hooks --agent kimi-code --apply \
 ```
 
 `install-hooks` merges `[[hooks]]` entries into `config.toml`, preserving the
-provider/model settings the same file holds, and stages the hook scripts under
-`~/.local/share/ai-memory/hooks/kimi-code/`. Capture covers 9 events —
+provider/model settings the same file holds. Entries cover 9 events —
 `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`Stop`, `SubagentStart`, `SubagentStop`, and `PreCompact` — as fire-and-forget
-POSTs to `/hook`. A pending handoff is injected at `SessionStart` through the
-hook's stdout, which Kimi Code appends to the model context.
+`Stop`, `SubagentStart`, `SubagentStop`, and `PreCompact` — and default to
+native `ai-memory hook --event … --agent kimi-code` commands on local installs
+(local spool plus batched delivery, capture-policy v1 enforced); the staged
+script bundle under `~/.local/share/ai-memory/hooks/kimi-code/` is the
+compatibility fallback (fire-and-forget POSTs to `/hook`). A pending handoff
+is injected at `SessionStart` through the hook's stdout, which Kimi Code
+appends to the model context.
 
 Kimi Code hook entries accept only `event`, `matcher`, `command`, and
 `timeout`; extra fields make the whole `config.toml` fail to load, so prefer
@@ -1175,6 +1186,12 @@ supported but defaults to off because it can call a paid provider; if you
 enable `embedding_backfill_interval_secs` after configuring an embedder,
 each scheduled tick backfills every existing workspace/project and may
 increase provider usage accordingly.
+
+Forget sweep and rule-based lint persist their last successful completion. On
+restart, a job that is not due waits only its remaining interval; a never-run
+or overdue job runs once after a bounded startup delay. Failed runs are not
+recorded as successful and retry after that bounded delay. Embedding backfill
+remains opt-in and keeps its interval-only behavior (no startup catch-up).
 
 ---
 

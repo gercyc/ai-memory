@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Tool lifecycle capture now records safe metadata summaries for the closed
+  Claude Code, OpenCode, Pi, and Antigravity schemas: canonical family,
+  validated agent-provided call ID where available, and a PostToolUse outcome.
+  PreToolUse never stores tool inputs, commands, paths, or arbitrary tool
+  names; PostToolUse keeps its bounded response/error excerpt. Stop and
+  assistant-message capture remain disabled/deferred ([#190]).
+- Per-repository capture exclusions via `[capture] ignore_paths` in the nearest
+  `.ai-memory.toml` ([#194]). Supported native hooks and generated
+  OpenCode/OMP/Pi/OpenClaw integrations apply the policy before local spool or
+  network delivery; `ai-memory hook --check-capture` safely reports a bounded
+  local decision. This changes no MCP tools and needs no database migration.
 - Kimi Code CLI is now a supported MCP + lifecycle-hook integration
   (`--client kimi-code` / `--agent kimi-code`, alias `kimi`). `install-mcp`
   merges an `mcpServers` entry into `~/.kimi-code/mcp.json` with a plain `url`
@@ -36,6 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via MCP `memory_handoff_accept`.
 
 ### Changed
+- Scheduled forget sweep and rule-based lint now persist their last successful
+  completion across restarts. Overdue or never-run jobs perform one bounded
+  startup catch-up, while not-due jobs wait only their remaining interval;
+  failures retry without advancing cadence. Embedding backfill remains opt-in
+  and does not gain startup catch-up behavior ([#192]).
+- `init`-generated token peppers no longer make operational `/admin/*` routes
+  root-only before the first user is created. Admin mode now switches
+  immediately and fail-closed from a store-backed user-row check; expired users
+  still count. Servers refuse startup when user rows exist but either the
+  non-empty `[auth].token_pepper` or static `[auth].bearer_token` is missing or
+  blank, preventing accidental anonymous admin reopening ([#191]).
 - `install-hooks --agent devin` now infers the server URL and bearer token from
   `~/.devin/config.json` when flags and environment settings are absent, keeping
   hooks aligned with an existing Devin MCP registration.
@@ -74,13 +96,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (everything outside `A-Za-z0-9-_.~`) in both the native helper and the
   POSIX `hooks/_lib.sh`, and the shell cwd extractor unescapes JSON `\\` /
   `\/`. Previously a Windows cwd like `C:\dev\myproject` went into the query
-  string with raw backslashes — confirmed to break the shell-script hook
-  fallback outside Git Bash, and the suspected cause of the native
-  session-start hook returning `{}` on Windows while the pending handoff
-  stayed unconsumed. The session-start hook also now prints a stderr
-  warning when the handoff fetch fails (server unreachable, bad URL)
+  string with raw backslashes, which broke the shell-script fallback outside
+  Git Bash. The reporter confirmed that native Windows handoff delivery was
+  already correct for well-formed JSON; their original failure came from a
+  PowerShell pipe adding a UTF-8 BOM. The session-start hook now also prints a
+  stderr warning when the handoff fetch fails (server unreachable, bad URL)
   instead of being indistinguishable from "no pending handoff" — exit code
-  stays 0, hooks never break the agent ([#188]).
+  stays 0, hooks never break the agent. Malformed-payload/BOM diagnostics are
+  tracked separately in [#197] ([#188]).
 - `install-mcp --server-url` now appends the `/mcp` path when given a base
   URL (the same value `install-hooks --server-url` takes), instead of
   rendering a client config that points at the server root and 404s. The
