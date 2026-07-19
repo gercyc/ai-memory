@@ -37,8 +37,8 @@ use anyhow::{Context, Result, bail};
 use crate::cli::{AgentChoice, SetupAgentArgs};
 use crate::commands::install_mcp;
 use crate::commands::render_shared::{
-    ANTIGRAVITY_LIFECYCLE_EVENTS, ANTIGRAVITY_TOOL_EVENTS, CLAUDE_CODE_EVENTS, CODEX_PROFILE,
-    CURSOR_PROFILE, GEMINI_PROFILE, build_claude_code_payload, build_devin_payload,
+    ANTIGRAVITY_LIFECYCLE_EVENTS, ANTIGRAVITY_TOOL_EVENTS, CODEX_PROFILE, CURSOR_PROFILE,
+    GEMINI_PROFILE, KIMI_CODE_EVENTS, build_claude_code_payload, build_devin_payload,
     build_grok_payload, hook_script_for_current_platform,
 };
 use crate::config::{Config, DEFAULT_SERVER_URL};
@@ -149,7 +149,7 @@ pub fn run(config: &Config, args: SetupAgentArgs) -> Result<()> {
         // exactly; its `[[hooks]]` TOML merge into config.toml (shared
         // with user provider/model settings) is owned by install-hooks
         // apply-mode, so print-mode stays a conservative script listing.
-        AgentChoice::KimiCode => emit_other(&emit_root, agent_sub, &args, &[&CLAUDE_CODE_EVENTS]),
+        AgentChoice::KimiCode => emit_other(&emit_root, agent_sub, &args, &[&KIMI_CODE_EVENTS]),
         AgentChoice::OpenCode
         | AgentChoice::Pi
         | AgentChoice::Omp
@@ -363,7 +363,12 @@ fn event_script_paths(emit_root: &Path, event_lists: &[&[(&str, &str)]]) -> Vec<
     for events in event_lists {
         for (_, script) in *events {
             let script = hook_script_for_current_platform(script);
-            paths.push(emit_root.join(script.as_ref()));
+            let path = emit_root.join(script.as_ref());
+            // Two events may share one script (Kimi Code's PostToolUseFailure
+            // reuses post-tool-use); list each file once.
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
         }
     }
     paths
@@ -632,12 +637,12 @@ mod tests {
     }
 
     #[test]
-    fn kimi_code_manual_script_paths_cover_claude_code_event_set() {
-        // Kimi Code's hook vocabulary (SessionStart, SessionEnd,
-        // UserPromptSubmit, PreToolUse, PostToolUse, Stop, SubagentStart,
-        // SubagentStop, PreCompact) mirrors Claude Code's nine events.
+    fn kimi_code_manual_script_paths_cover_kimi_event_set() {
+        // Kimi Code's hook vocabulary is Claude Code's nine events plus
+        // PostToolUseFailure; the failure entry reuses post-tool-use.sh,
+        // so the script list carries nine unique files for ten events.
         let root = Path::new("/hooks/kimi-code");
-        let paths = event_script_paths(root, &[&CLAUDE_CODE_EVENTS]);
+        let paths = event_script_paths(root, &[&KIMI_CODE_EVENTS]);
         let rendered = paths
             .iter()
             .map(|path| path.to_string_lossy())

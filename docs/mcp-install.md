@@ -622,9 +622,11 @@ ai-memory install-hooks --agent kimi-code --apply \
     --server-url "http://homelab:49374" --auth-token "$TOKEN"
 ```
 
-The installed entries cover 9 events — `SessionStart`, `SessionEnd`,
-`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`,
-`SubagentStop`, and `PreCompact` — with a Kimi Code-specific script bundle /
+The installed entries cover 10 events — `SessionStart`, `SessionEnd`,
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`
+(Kimi Code fires `PostToolUse` on successful calls only), `Stop`,
+`SubagentStart`, `SubagentStop`, and `PreCompact` — with a Kimi Code-specific
+script bundle /
 native `ai-memory hook --event … --agent kimi-code` commands (native is the
 default for local installs; the staged scripts under
 `~/.local/share/ai-memory/hooks/kimi-code/` are the compatibility fallback).
