@@ -363,6 +363,8 @@ fn event_script_paths(emit_root: &Path, event_lists: &[&[(&str, &str)]]) -> Vec<
         for (_, script) in *events {
             let script = hook_script_for_current_platform(script);
             let path = emit_root.join(script.as_ref());
+            // Two events may share one script (Kimi Code's PostToolUseFailure
+            // reuses post-tool-use); list each file once.
             if !paths.contains(&path) {
                 paths.push(path);
             }
@@ -634,9 +636,10 @@ mod tests {
     }
 
     #[test]
-    fn kimi_code_manual_script_paths_cover_all_events_without_duplicates() {
-        // Kimi registers ten rules, but its successful and failed post-tool
-        // events intentionally share the same handler script.
+    fn kimi_code_manual_script_paths_cover_kimi_event_set() {
+        // Kimi Code's hook vocabulary is Claude Code's nine events plus
+        // PostToolUseFailure; the failure entry reuses post-tool-use.sh,
+        // so the script list carries nine unique files for ten events.
         let root = Path::new("/hooks/kimi-code");
         let paths = event_script_paths(root, &[&KIMI_CODE_EVENTS]);
         let rendered = paths

@@ -943,12 +943,10 @@ fn mcp_entry_is_ours(key: &str, entry: &serde_json::Value, name: Option<&str>, u
     false
 }
 
-/// URL forms uninstall should match for `client`: the endpoint as given,
-/// plus — for KimiCode only — the `flavor=moonshot` form install-mcp
-/// actually writes (Moonshot rejects root-level schema combinators, so
-/// kimi's mcp.json points at `/mcp?flavor=moonshot` while `--mcp-url`
-/// keeps the unflavored default). Every other client keeps exact-match
-/// semantics.
+/// URL forms uninstall matches for `client`: the endpoint as given, plus
+/// for KimiCode the `flavor=moonshot` form install-mcp actually writes
+/// (`--mcp-url` keeps the unflavored default). Every other client keeps
+/// exact-match semantics.
 fn mcp_url_candidates(client: McpClient, url: &str) -> Vec<String> {
     let mut candidates = vec![url.to_string()];
     if matches!(client, McpClient::KimiCode) {
@@ -960,9 +958,7 @@ fn mcp_url_candidates(client: McpClient, url: &str) -> Vec<String> {
     candidates
 }
 
-/// [`strip_mcp_json`] over each of the client's URL candidate forms, so a
-/// Kimi Code entry installed with the `flavor=moonshot` marker is still
-/// matched by the default unflavored `--mcp-url`.
+/// [`strip_mcp_json`] over each URL candidate form of the client.
 fn strip_mcp_json_client(
     content: &str,
     client: McpClient,
@@ -1856,7 +1852,6 @@ command = "'/usr/local/bin/ai-memory' hook --event stop --agent kimi-code --serv
                 "http://127.0.0.1:49374/mcp?flavor=moonshot".to_string()
             ]
         );
-        // An already-flavored --mcp-url must not stack a duplicate.
         assert_eq!(
             mcp_url_candidates(
                 McpClient::KimiCode,
@@ -1864,16 +1859,14 @@ command = "'/usr/local/bin/ai-memory' hook --event stop --agent kimi-code --serv
             ),
             vec!["http://127.0.0.1:49374/mcp?flavor=moonshot".to_string()]
         );
-        // Every other client keeps exact-match semantics.
         assert_eq!(
             mcp_url_candidates(McpClient::Cursor, "http://127.0.0.1:49374/mcp"),
             vec!["http://127.0.0.1:49374/mcp".to_string()]
         );
     }
 
-    /// Regression: install-mcp writes kimi's entry with the
-    /// `?flavor=moonshot` marker, while `--mcp-url` keeps the unflavored
-    /// default — the exact-match strip must still find the entry.
+    /// install-mcp writes the flavored URL while `--mcp-url` defaults
+    /// unflavored — the strip must still match.
     #[test]
     fn strip_mcp_kimi_code_matches_flavored_url_with_default_mcp_url() {
         let content = r#"{"mcpServers":{"ai-memory":{"url":"http://127.0.0.1:49374/mcp?flavor=moonshot","headers":{"X-Token":"t"}},"other":{"url":"http://x"}}}"#;
@@ -1886,6 +1879,37 @@ command = "'/usr/local/bin/ai-memory' hook --event stop --agent kimi-code --serv
         .unwrap();
         assert_eq!(removed, vec!["ai-memory".to_string()]);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["mcpServers"].get("ai-memory").is_none());
+        assert!(v["mcpServers"].get("other").is_some());
+    }
+
+    /// The plan matched the flavored Kimi Code entry but apply dispatched
+    /// the unflavored stripper — the CLI reported success and left the
+    /// entry behind. Drive `apply_change` with the exact URL install-mcp
+    /// writes so plan and apply can never diverge again.
+    #[test]
+    fn apply_change_removes_kimi_code_flavored_mcp_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"ai-memory":{"url":"http://127.0.0.1:49374/mcp?flavor=moonshot"},"other":{"url":"http://x"}}}"#,
+        )
+        .unwrap();
+
+        apply_change(
+            &PlannedChange::Rewrite {
+                path: path.clone(),
+                removed: vec!["ai-memory".to_string()],
+                ops: vec![RewriteOp::McpJson(McpClient::KimiCode)],
+            },
+            Some("ai-memory"),
+            "http://127.0.0.1:49374/mcp",
+        )
+        .unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(v["mcpServers"].get("ai-memory").is_none());
         assert!(v["mcpServers"].get("other").is_some());
     }

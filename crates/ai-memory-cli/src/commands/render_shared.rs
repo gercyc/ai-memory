@@ -47,16 +47,22 @@ pub(crate) const CLAUDE_CODE_EVENTS: [(&str, &str); 9] = [
     ("SubagentStop", "subagent-stop.sh"),
 ];
 
-/// Kimi Code lifecycle events ai-memory hooks. Kimi exposes Claude Code's
-/// 9-event vocabulary plus a separate `PostToolUseFailure` event, because
-/// its `PostToolUse` event fires only for successful calls. Kimi Code wires
-/// hooks as `[[hooks]]` entries in `$KIMI_CODE_HOME/config.toml` (TOML)
-/// instead of a JSON settings file, so its payload comes from
-/// [`kimi_code_hook_commands`] rather than the JSON hook shapes.
+/// Kimi Code lifecycle events ai-memory hooks. Claude Code's 9-event
+/// vocabulary (`CLAUDE_CODE_EVENTS`) plus `PostToolUseFailure`: Kimi Code
+/// fires `PostToolUse` on successful calls only and reports failures
+/// separately. The failure entry reuses the post-tool-use script — the
+/// server aliases `PostToolUseFailure` to `PostToolUse` and reads the
+/// outcome from the payload.
 ///
-/// New handler scripts must also be added as `.sh` and `.ps1` files under
-/// `hooks/kimi-code/`. Multiple events may reuse one handler when they map to
-/// the same internal hook kind, as the two post-tool events do below.
+/// Kimi Code wires hooks as `[[hooks]]` entries in
+/// `$KIMI_CODE_HOME/config.toml` (TOML) instead of a JSON settings file,
+/// so its payload comes from [`kimi_code_hook_commands`] rather than the
+/// JSON hook shapes.
+///
+/// Adding a hook event means updating this list AND adding the matching
+/// `.sh` and `.ps1` files under `hooks/kimi-code/` (a reused script like
+/// post-tool-use needs no new file). The install-hooks parity test fails
+/// if the bundle drifts.
 pub(crate) const KIMI_CODE_EVENTS: [(&str, &str); 10] = [
     ("SessionStart", "session-start.sh"),
     ("UserPromptSubmit", "user-prompt-submit.sh"),

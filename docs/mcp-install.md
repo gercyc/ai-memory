@@ -623,10 +623,12 @@ ai-memory install-hooks --agent kimi-code --apply \
 ```
 
 The installed entries cover 10 events — `SessionStart`, `SessionEnd`,
-`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`,
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`
+(Kimi Code fires `PostToolUse` on successful calls only), `Stop`,
 `SubagentStart`, `SubagentStop`, and `PreCompact` — with a Kimi Code-specific
-script bundle / native `ai-memory hook --event … --agent kimi-code` commands
-(native is the default for local installs; the staged scripts under
+script bundle /
+native `ai-memory hook --event … --agent kimi-code` commands (native is the
+default for local installs; the staged scripts under
 `~/.local/share/ai-memory/hooks/kimi-code/` are the compatibility fallback).
 Capture is fire-and-forget; a pending handoff is injected at `SessionStart`
 via the hook's stdout (Kimi Code appends stdout to context on exit 0), the
