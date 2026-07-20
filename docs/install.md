@@ -14,6 +14,8 @@ path (docker + Claude Code). This page covers everything else:
   (curl-based installer)
 - [Running ai-memory without docker](#running-ai-memory-without-docker)
   (cargo install, building from source)
+- [Managed cross-harness workstreams](managed-workstreams.md)
+  (`ai-memory run`, transparent native resume, and argument forwarding)
 - [LLM provider tiers + self-hosted Ollama](#llm-provider-tiers)
 - [Subcommand reference](#subcommand-reference)
 - [Managed routing snippets and Agent Skills](#managed-routing-snippets-and-agent-skills)
@@ -1092,6 +1094,8 @@ docker run --rm akitaonrails/ai-memory:latest --help     # full subcommand tree
 | Subcommand | Pattern | What it does |
 |---|---|---|
 | `serve` | `docker compose up -d` (already done) | Run the HTTP MCP server |
+| `run <harness> [args...]` | host wrapper or native binary | Opt into one managed cross-harness workstream; all arguments after the harness name go to the harness unchanged |
+| `workstream-search [query]` | managed child or thin HTTP client | Search the complete visible managed-workstream ledger; the managed child receives its workstream id automatically |
 | `status` | `docker exec` | Counts, paths, derived-index diagnostics, and passive LLM/embedding provider health |
 | `search "<query>"` | `docker exec` | Wiki search with FTS5 + graph/vector RRF |
 | `write-page` | `docker exec` | Manual page write (atomic + indexed) |

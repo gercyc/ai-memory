@@ -200,6 +200,44 @@ pub async fn post_json<B: Serialize, T: DeserializeOwned>(
     post_json_with_query(endpoint, path, &[], body).await
 }
 
+/// POST JSON and require a successful response without decoding its body.
+pub async fn post_json_no_content<B: Serialize>(
+    endpoint: &ServerEndpoint,
+    path: &str,
+    body: &B,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let url = endpoint.build_url(path);
+    let req = endpoint.authenticate(client.post(&url).json(body));
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| augment_connect_error(e, endpoint, &url))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        bail!("server returned {status}: {body}");
+    }
+    Ok(())
+}
+
+/// POST an empty body and require a successful response.
+pub async fn post_empty(endpoint: &ServerEndpoint, path: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let url = endpoint.build_url(path);
+    let req = endpoint.authenticate(client.post(&url));
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| augment_connect_error(e, endpoint, &url))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        bail!("server returned {status}: {body}");
+    }
+    Ok(())
+}
+
 /// POST JSON body to `<endpoint>{path}` with URL-encoded query params.
 ///
 /// # Errors

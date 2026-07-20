@@ -67,6 +67,14 @@ async fn main() -> Result<()> {
     match command {
         Command::Init(args) => commands::init::run(&config, args, config_path.as_deref()),
         Command::Status(args) => commands::status::run(&config, args).await,
+        Command::Run(args) => {
+            let exit_code = commands::run::run(&config, args).await?;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            Ok(())
+        }
+        Command::WorkstreamSearch(args) => commands::workstream_search::run(&config, args).await,
         Command::AuditContamination(args) => {
             commands::audit_contamination::run(&config, args).await
         }
