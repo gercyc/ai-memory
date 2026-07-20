@@ -60,7 +60,7 @@ pub struct HookQuery {
 /// Coalesced view of an incoming hook event after light parsing of the
 /// body. We keep the original raw JSON around so consumers can extract
 /// agent-specific fields they care about.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct HookEnvelope {
     /// Mapped lifecycle event.
     pub event: HookEvent,
@@ -100,6 +100,35 @@ pub struct HookEnvelope {
     pub body_excerpt: Option<String>,
     /// The agent's raw JSON, kept for forensics.
     pub raw: serde_json::Value,
+}
+
+/// Manual `Debug` that never renders `raw` (#196). `raw` is the agent's full
+/// payload; a stray `?env` / `%env` in a future tracing span would otherwise
+/// copy it verbatim into the rolling log file on disk — including the opt-in
+/// assistant excerpt landing in a later PR. Every other field stays visible so
+/// the envelope is still debuggable.
+impl std::fmt::Debug for HookEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HookEnvelope")
+            .field("event", &self.event)
+            .field("agent", &self.agent)
+            .field("session_id", &self.session_id)
+            .field("cwd", &self.cwd)
+            .field("workspace_override", &self.workspace_override)
+            .field("project_override", &self.project_override)
+            .field("project_strategy", &self.project_strategy)
+            .field("drop_subagent_requested", &self.drop_subagent_requested)
+            .field(
+                "recall_default_global_requested",
+                &self.recall_default_global_requested,
+            )
+            .field("extension", &self.extension)
+            .field("source_event", &self.source_event)
+            .field("title_hint", &self.title_hint)
+            .field("body_excerpt", &self.body_excerpt)
+            .field("raw", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Keys by which agent harnesses tag a hook event as belonging to a SUBAGENT
@@ -782,6 +811,32 @@ mod tests {
         assert_eq!(HookEvent::parse("PreToolUse"), HookEvent::PreToolUse);
         assert_eq!(HookEvent::parse("user_prompt"), HookEvent::UserPrompt);
         assert_eq!(HookEvent::parse("bogus"), HookEvent::Other);
+    }
+
+    #[test]
+    fn debug_never_renders_raw_payload() {
+        // `raw` holds the agent's full payload; the manual Debug impl must redact
+        // it so a stray `?env` in a tracing span cannot copy it into the rolling
+        // log file on disk (#196). Other fields stay visible for debugging.
+        let env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "stop".into(),
+                agent: Some("claude-code".into()),
+                ..Default::default()
+            },
+            serde_json::json!({
+                "session_id": "dbg",
+                "secret": "SENTINEL_RAW_PAYLOAD"
+            }),
+        );
+        let rendered = format!("{env:?}");
+        assert!(
+            !rendered.contains("SENTINEL_RAW_PAYLOAD"),
+            "Debug leaked the raw payload: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "raw was not redacted");
+        // Sanity: the redaction did not blank the whole struct.
+        assert!(rendered.contains("Stop"), "event field went missing");
     }
 
     #[test]
