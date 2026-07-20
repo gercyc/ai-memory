@@ -41,6 +41,7 @@ dependencies = [
  "ai-memory-store",
  "ai-memory-web",
  "ai-memory-wiki",
+ "ai-memory-workstream",
  "anyhow",
  "axum",
  "base64",
@@ -145,6 +146,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -276,6 +278,21 @@ dependencies = [
  "tower",
  "tracing",
  "winapi-util",
+]
+
+[[package]]
+name = "ai-memory-workstream"
+version = "1.15.0"
+dependencies = [
+ "ai-memory-core",
+ "anyhow",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

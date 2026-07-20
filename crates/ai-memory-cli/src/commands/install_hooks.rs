@@ -1514,6 +1514,8 @@ fn ts_apply_marker_params(default_strategy: Option<&str>) -> String {
         return format!(
             "{TS_TOML_FLAG}\n{}",
             r#"function applyMarkerParams(url: URL, cwd: string | undefined): void {
+  const managedRun = process.env.AI_MEMORY_RUN_ID;
+  if (managedRun) url.searchParams.set("managed_run", managedRun);
   const marker = findMarker(cwd);
   if (!marker || !cwd) return;
   url.searchParams.set("cwd", cwd);
@@ -1543,6 +1545,8 @@ fn ts_apply_marker_params(default_strategy: Option<&str>) -> String {
         );
     };
     let body = r#"function applyMarkerParams(url: URL, cwd: string | undefined): void {
+  const managedRun = process.env.AI_MEMORY_RUN_ID;
+  if (managedRun) url.searchParams.set("managed_run", managedRun);
   if (!cwd) return;
   url.searchParams.set("cwd", cwd);
   let workspace: string | undefined;
@@ -1788,7 +1792,7 @@ function textFromParts(parts: unknown): string {{
 
 const sessionCwds = new Map<string, string>();
 const startedSessions = new Set<string>();
-const handoffChecked = new Set<string>();
+const handoffFetches = new Map<string, Promise<string | undefined>>();
 const preCompactLast = new Map<string, number>();
 
 function cwdFor(id: string | undefined, directory: string): string {{
@@ -1803,7 +1807,12 @@ function startSession(id: string | undefined, cwd: string, extra: Record<string,
   if (!id || startedSessions.has(id)) return;
   startedSessions.add(id);
   rememberCwd(id, cwd);
-  postHook("session-start", {{ sessionID: id, cwd, ...extra }});
+  // Generated integrations inject through fetchHandoff below. In managed mode
+  // a queued SessionStart response is not model-visible and must not consume
+  // the workstream context before that synchronous fetch receives it.
+  if (!process.env.AI_MEMORY_RUN_ID) {{
+    postHook("session-start", {{ sessionID: id, cwd, ...extra }});
+  }}
 }}
 
 function endSession(id: string | undefined, directory: string, cwd?: string): void {{
@@ -1811,7 +1820,7 @@ function endSession(id: string | undefined, directory: string, cwd?: string): vo
   const resolvedCwd = cwd || cwdFor(id, directory);
   postHook("session-end", {{ sessionID: id, cwd: resolvedCwd }});
   sessionCwds.delete(id);
-  handoffChecked.delete(id);
+  handoffFetches.delete(id);
   preCompactLast.delete(id);
 }}
 
@@ -1839,10 +1848,11 @@ function postHook(event: string, payload: Record<string, unknown>): void {{
   }}
 }}
 
-async function fetchHandoff(cwd: string): Promise<string | undefined> {{
+async function fetchHandoff(cwd: string, id: string | undefined): Promise<string | undefined> {{
   const url = new URL(`${{SERVER}}/handoff`);
   url.searchParams.set("agent", AGENT);
   url.searchParams.set("cwd", cwd);
+  if (id) url.searchParams.set("session_id", id);
   applyMarkerParams(url, cwd);
   try {{
     const response = await fetch(url, {{
@@ -1935,10 +1945,14 @@ export const AiMemoryHooks: Plugin = async ({{ directory }}) => {{
     }},
     "experimental.chat.system.transform": async (input, output) => {{
       const id = sessionID(input);
-      if (!id || handoffChecked.has(id)) return;
-      handoffChecked.add(id);
+      if (!id) return;
       startSession(id, cwdFor(id, directory));
-      const handoff = await fetchHandoff(cwdFor(id, directory));
+      let pending = handoffFetches.get(id);
+      if (!pending) {{
+        pending = fetchHandoff(cwdFor(id, directory), id);
+        handoffFetches.set(id, pending);
+      }}
+      const handoff = await pending;
       if (handoff) (output as any).system.push(handoff);
     }},
   }};
@@ -2371,7 +2385,12 @@ function startSession(ctx: any, extra: Record<string, unknown> = {{}}): void {{
   const id = sessionID(ctx);
   if (!id || startedSessions.has(id)) return;
   startedSessions.add(id);
-  postHook("session-start", {{ ...sessionPayload(ctx), ...extra }});
+  // Generated integrations inject through fetchHandoff below. In managed mode
+  // a queued SessionStart response is not model-visible and must not consume
+  // the workstream context before that synchronous fetch receives it.
+  if (!process.env.AI_MEMORY_RUN_ID) {{
+    postHook("session-start", {{ ...sessionPayload(ctx), ...extra }});
+  }}
 }}
 
 function postPreCompact(ctx: any): void {{
@@ -2398,10 +2417,11 @@ function postHook(event: string, payload: Record<string, unknown>): void {{
   }}
 }}
 
-async function fetchHandoff(cwd: string): Promise<string | undefined> {{
+async function fetchHandoff(cwd: string, id: string | undefined): Promise<string | undefined> {{
   const url = new URL(`${{SERVER}}/handoff`);
   url.searchParams.set("agent", AGENT);
   url.searchParams.set("cwd", cwd);
+  if (id) url.searchParams.set("session_id", id);
   applyMarkerParams(url, cwd);
   try {{
     const response = await fetch(url, {{
@@ -2431,7 +2451,7 @@ export default function AiMemoryExtension(api: any): void {{
     const id = sessionID(ctx);
     if (!id || handoffChecked.has(id)) return;
     handoffChecked.add(id);
-    const handoff = await fetchHandoff(ctx?.cwd ?? "");
+    const handoff = await fetchHandoff(ctx?.cwd ?? "", id);
     if (!handoff) return;
     return {{
       message: {{
@@ -4213,6 +4233,7 @@ model = "gpt-5"
         assert!(generated.contains("const CAPTURE_POLICY_V1 = 1;"));
         assert!(generated.contains("const CAPTURE_MARKER_MAX_BYTES = 64 * 1024;"));
         assert!(generated.contains("async function fetchHandoff"));
+        assert!(generated.contains("if (!process.env.AI_MEMORY_RUN_ID) {"));
         assert!(generated.contains("const response = await fetch(url, {"));
         assert!(generated.contains("signal: timeoutSignal(1000)"));
         assert!(!generated.contains("signal: timeoutSignal(500)"));
@@ -4230,6 +4251,11 @@ model = "gpt-5"
         assert!(plugin.contains(r#""experimental.chat.system.transform": async"#));
         assert!(plugin.contains("export default AiMemoryHooks"));
         assert!(plugin.contains("const startedSessions = new Set<string>();"));
+        assert!(
+            plugin
+                .contains("const handoffFetches = new Map<string, Promise<string | undefined>>();")
+        );
+        assert!(!plugin.contains("handoffChecked"));
         assert!(plugin.contains("function startSession"));
         assert!(plugin.contains("function endSession"));
         assert!(plugin.contains("fetchHandoff"));
@@ -4267,7 +4293,7 @@ model = "gpt-5"
         );
         assert!(plugin.contains("!startedSessions.delete(id)"));
         assert!(plugin.contains("sessionCwds.delete(id);"));
-        assert!(plugin.contains("handoffChecked.delete(id);"));
+        assert!(plugin.contains("handoffFetches.delete(id);"));
         assert!(plugin.contains("preCompactLast.delete(id);"));
         assert!(plugin.contains("postHook(\"user-prompt\""));
         assert!(plugin.contains("Bearer ${TOKEN}"));
@@ -4356,6 +4382,7 @@ model = "gpt-5"
         assert!(extension.contains("postHook(\"session-start\""));
         assert!(extension.contains("postHook(\"user-prompt\""));
         assert!(extension.contains("fetchHandoff"));
+        assert!(extension.contains("if (!process.env.AI_MEMORY_RUN_ID) {"));
         assert!(extension.contains("function applyMarkerParams"));
         assert!(extension.contains("readFileSync(marker, \"utf8\")"));
         assert!(extension.contains("text.split(/\\r?\\n/)"));

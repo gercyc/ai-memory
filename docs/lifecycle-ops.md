@@ -281,7 +281,7 @@ supersession chain (the real page history lives in the wiki's git
 mirror). The `true-move` path has no such loss.
 
 > **Operational caveat — moving the project the current session writes
-> to.** Lifecycle hooks stamp an observation on every tool call into the
+> to.** Lifecycle hooks stamp a bounded observation on every supported tool-lifecycle event into the
 > session's project. If you move that very project mid-session, the next
 > hook re-creates the source (`scratch`-style) under the old workspace.
 > Before moving a live project, point the repo's `.ai-memory.toml` at the

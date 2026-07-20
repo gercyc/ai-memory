@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Optional managed cross-harness workstreams via `ai-memory run` for Claude
+  Code, Codex, OpenCode, Pi, and OMP. Direct harness launches retain the legacy
+  hook/handoff behavior. Managed launches transparently create or resume one
+  native session per harness, pass all harness argv through without a `--`
+  separator, inject unseen portable context at SessionStart, import visible
+  native transcript tails through read-only adapters, and record non-mutating
+  repository checkpoints. A lease prevents concurrent writers; deterministic
+  event ids, incremental cursors, immutable sanitized JSONL segments, and
+  batched idempotent imports make retry and crash recovery explicit. Hidden
+  reasoning and private provider records are excluded with loss annotations.
+  `ai-memory workstream-search` searches history older than the bounded startup
+  packet. The Linux/macOS Docker wrapper uses a checksum-verified cached native
+  client for `run` so host agent executables and transcript stores remain
+  accessible. A separate opt-in local acceptance runner validates real
+  cross-harness delivery and native resume without adding credentialed model
+  calls to CI. Generated OpenCode/Pi/OMP integrations reserve managed context
+  acknowledgement for their model-visible injection path; OpenCode caches the
+  packet per native session so auxiliary model requests cannot consume it
+  before the main coding turn. Pi/OMP native `--session-dir` overrides are
+  honored by the importer, as are native store environment overrides for all
+  five adapters. This includes complete atomic-write temp transcripts left by
+  a Pi-family process that exits before its final rename.
+
 ### Changed
 - Configuring the hosted `anthropic` or `openai` provider without an explicit
   model now selects the documented recommended defaults, `claude-haiku-4-5`

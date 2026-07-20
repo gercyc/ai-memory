@@ -11,7 +11,7 @@
 A self-contained Rust binary that:
 
 1. Runs as an **MCP server** (stdio + HTTP/SSE) for coding-agent CLIs (Claude Code, OpenAI Codex, Cursor, Gemini CLI, Antigravity CLI, OpenClaw, OpenCode, OMP, and MCP-capable clients).
-2. Captures the agent's session **automatically** - no `write_note` ceremony - via hook scripts or generated extensions that the agent CLIs invoke (Claude Code / Codex / Cursor / Gemini CLI / Antigravity CLI lifecycle hooks, OpenClaw / OpenCode / OMP TypeScript integrations). Optional transcript-tail fallback for agents without hook APIs.
+2. Captures sanitized, bounded lifecycle observations **automatically** - no `write_note` ceremony - via hook scripts or generated extensions that agent CLIs invoke. Optional `ai-memory run` workstreams additionally read visible native transcript tails through host-side, read-only adapters.
 3. Maintains a **Karpathy-style wiki**: incrementally-compiled markdown pages with cross-links, supersession, an `index.md` and a `log.md`.
 4. Serves retrieval via the MCP `tools/list` to coding agents: a handful of *narrow* tools, not 50.
 5. Ships a **Docker image** (`docker run -v ai-memory-data:/data -p 49374:49374 ai-memory`) so it can move between desktop and homelab.
@@ -239,9 +239,11 @@ Project resolution chain: explicit param → server's default → cwd-based heur
 - **Self-healing**: startup checks (`memory_diagnose`): vector dim/provider drift, FTS index corruption, orphan pages, broken links, zombie sessions. `memory_heal` auto-fixes the safe subset.
 - **Logging**: structured `tracing` with rotating files, capped at N MB. No feedback loops (agentmemory #519).
 
-## 13. What we are explicitly NOT doing in v1
+## 13. Original v1 exclusions (historical)
 
-To stay scoped:
+The initial scope excluded the following. Some, including multi-user auth, the
+web UI, and managed Agent Skills, shipped after v1; this list is retained as the
+historical decision boundary rather than a current support matrix.
 
 - No multi-tenant auth/RBAC (single-user homelab).
 - No web UI / dashboard (use `sqlite3` + `glow`/Obsidian).
@@ -277,3 +279,31 @@ Top-line rules carved into the codebase:
 18. LLM has off by default; opt-in via env (agentmemory #138/#143).
 19. `cargo deny` for transitive license audits (cognee #2807 - FastEmbed removed for license).
 20. Pin upstream native deps; ship a lockfile (agentmemory #555/#540).
+
+## 15. Managed workstreams use a portable ledger, not native format conversion
+
+Managed cross-harness continuity is explicitly opt-in through `ai-memory run`.
+Direct Claude Code, Codex, OpenCode, Pi, and OMP launches retain the existing
+hook and single-use handoff behavior. There is no process-global mode or manual
+harness switch: the wrapper selects the current repository/worktree workstream
+and each adapter applies that harness's native create/resume syntax.
+
+One logical workstream owns one native session per harness plus an append-only
+portable event ledger. We rejected converting a Claude transcript into a fake
+Codex rollout (and the inverse): native stores include private, versioned state,
+provider-specific records, and integrity assumptions that ai-memory does not
+own. Adapters therefore read native stores without modifying them, normalize
+only visible messages/completed tools/compaction boundaries, and keep source
+and delivery cursors separately. Hidden reasoning and provider-private records
+are excluded explicitly.
+
+A renewable single-writer lease resolves precedence and concurrency instead of
+attempting bidirectional file synchronization. SessionStart receives a bounded
+unseen delta; the full visible ledger stays searchable. Repository checkpoints
+are evidence at run boundaries and never commit, stash, reset, or otherwise
+mutate the checkout. The markdown wiki remains the durable knowledge surface;
+the managed ledger is an operational continuity substrate.
+
+This design follows the harness-format and session-portability experiments in
+the companion `ai-babel` research project: semantic continuity is portable,
+while exact native context is preserved by resuming that harness's own session.

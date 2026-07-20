@@ -30,6 +30,7 @@
 | Gemini CLI | Supported | MCP config + lifecycle hooks. |
 | Oh My Pi / OMP | Supported | Use `--client omp` / `--agent omp` (or `oh-my-pi`) for native `.omp` MCP config + TypeScript extension; generated extension enforces capture exclusions. |
 | Pi | Supported | Generated `~/.pi/agent/extensions/ai-memory.ts` extension provides lifecycle capture and an HTTP MCP bridge; generated extension enforces capture exclusions. |
+| Managed workstreams | Opt-in | `ai-memory run` provides transparent cross-harness continuity for Claude Code, Codex, OpenCode, Pi, and OMP. Direct launches remain unchanged. See [`docs/managed-workstreams.md`](docs/managed-workstreams.md). |
 | Claude Desktop | MCP-only | Uses `mcp-remote`; no lifecycle hooks. |
 | OpenClaw | Supported | MCP config + native plugin lifecycle hooks; generated plugin enforces capture exclusions. |
 | Antigravity CLI | Supported | MCP config (`serverUrl`) + lifecycle hooks (`agy` alias). |
@@ -43,12 +44,12 @@
 
 ## What it is
 
-LLM coding agents lose all context when a session ends. ai-memory
-gives them a shared, persistent wiki: every prompt, tool call, and
-decision is captured automatically; when a session ends, the relevant
-pages get rewritten as a coherent narrative; when the next agent
-starts (Claude Code, Codex, OpenCode, …) it sees a handoff with
-"where you left off" already prepended.
+LLM coding agents lose context when a session ends. ai-memory gives them a
+shared, persistent wiki compiled from sanitized lifecycle observations. When a
+session ends, relevant observations become a coherent summary; the next agent
+receives a bounded handoff. Optional `ai-memory run` launches add a portable
+visible-event ledger and native per-harness resume for higher-fidelity
+cross-harness continuity.
 
 The wiki is plain markdown in a git repo - `grep`-able, openable in
 Obsidian, backed up with `rsync`. No vector database to babysit, no
@@ -58,8 +59,13 @@ priors are at the [bottom](#influences-and-prior-art).
 
 ## Key features
 
-- **Zero-friction capture.** Lifecycle hooks fire-and-forget every
-  prompt + tool call + session boundary. You never type `write_note`.
+- **Zero-friction lifecycle capture.** Hooks fire-and-forget bounded,
+  sanitized prompt, tool-lifecycle, and session-boundary observations. Direct
+  launches keep this lightweight path; it is not a complete native transcript.
+- **Opt-in managed workstreams.** `ai-memory run claude`, then `ai-memory run
+  codex --yolo`, transparently resumes one logical workstream with native
+  per-harness sessions, a portable visible-event ledger, and full-ledger search.
+  Native arguments pass through unchanged; direct agent commands are unaffected.
 - **Per-repository capture exclusions.** A nearest-marker `[capture]`
   `ignore_paths` policy drops matching recognized file-tool events before they
   reach the local spool or server. See [the capture policy reference](docs/marker-file.md#capture-exclusions).
@@ -605,7 +611,7 @@ One Rust binary runs an MCP/HTTP server and owns one data directory:
 ```text
 <data_dir>/
 ├── wiki/    # markdown source of truth, git-versioned
-├── raw/     # immutable session log archive
+├── raw/     # immutable sanitized managed-workstream transcript segments
 ├── db/      # SQLite indexes, including FTS5 and embeddings
 ├── models/  # reserved for local embedding models
 └── logs/    # rolling tracing output
@@ -625,6 +631,7 @@ diagram, crate breakdown, schema notes, and invariants.
 |---|---|
 | [`docs/install.md`](docs/install.md) | **Installation cookbook.** Every agent CLI, every alternative (curl, source build, no-docker, no-auth), and the server-on-a-different-machine (homelab/LAN) walkthrough. Read after the Quick start if your setup doesn't match the happy path. |
 | [`docs/usage.md`](docs/usage.md) | Handoffs, proactive memory queries, slim routing snippet + managed Agent Skills, migration from other memory tools, web UI, raw-wiki inspection, and rules-vs-facts workflow. |
+| [`docs/managed-workstreams.md`](docs/managed-workstreams.md) | Optional `ai-memory run` continuity across Claude Code, Codex, OpenCode, Pi, and OMP: transparent native resume, argument forwarding, ledger search, privacy, and recovery. |
 | [`docs/marker-file.md`](docs/marker-file.md) | `.ai-memory.toml` workspace/project routing for multi-client trees, mono-repos, worktrees, and work/personal separation. |
 | [`docs/auto-scope.md`](docs/auto-scope.md) | `[auto_scope]` modes for shared servers: default single-slot routing, session-aware isolation, and multi-user `per_actor` behavior. |
 | [`docs/macos.md`](docs/macos.md) | macOS install paths: native release binary (recommended), source build, the Docker wrapper, hook-platform notes, and current macOS limitations. |
