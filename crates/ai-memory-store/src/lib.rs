@@ -3505,6 +3505,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_run_cancel_releases_the_lease_immediately() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let workspace = store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+        let project = store
+            .writer
+            .get_or_create_project(workspace, "managed-cancel", None)
+            .await
+            .unwrap();
+        let prepare = PrepareWorkstreamRun {
+            workspace_id: workspace,
+            project_id: project,
+            repo_fingerprint: "repo".into(),
+            worktree_fingerprint: "worktree".into(),
+            cwd: "/repo".into(),
+            agent: AgentKind::Codex,
+            automatic_harness: false,
+            available_agents: Vec::new(),
+            selection: WorkstreamSelection::Current,
+            lease_owner: "test:1".into(),
+        };
+        let first = store
+            .writer
+            .prepare_workstream_run(prepare.clone())
+            .await
+            .unwrap();
+        assert!(
+            store
+                .writer
+                .prepare_workstream_run(prepare.clone())
+                .await
+                .is_err()
+        );
+        assert!(store.writer.cancel_managed_run(first.run_id).await.unwrap());
+        assert!(
+            !store.writer.cancel_managed_run(first.run_id).await.unwrap(),
+            "cancel is idempotent once the run is no longer active"
+        );
+        assert_eq!(
+            store
+                .reader
+                .managed_run_status(first.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "expired"
+        );
+        store.writer.prepare_workstream_run(prepare).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn managed_adoption_stops_after_any_harness_links_the_workstream() {
         let tmp = TempDir::new().unwrap();
         let store = Store::open(tmp.path()).unwrap();

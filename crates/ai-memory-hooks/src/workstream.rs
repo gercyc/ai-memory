@@ -51,6 +51,7 @@ pub fn workstream_router(state: WorkstreamState) -> Router {
         .route("/workstream/runs", post(prepare_run))
         .route("/workstream/runs/{run_id}", get(run_status))
         .route("/workstream/runs/{run_id}/heartbeat", post(heartbeat_run))
+        .route("/workstream/runs/{run_id}/cancel", post(cancel_run))
         .route("/workstream/runs/{run_id}/context", post(run_context))
         .route(
             "/workstream/runs/{run_id}/context/accept",
@@ -269,6 +270,24 @@ async fn heartbeat_run(
     match state.writer.heartbeat_managed_run(run_id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error(StatusCode::CONFLICT, "managed run lease is not active"),
+        Err(failure) => store_error_response(failure),
+    }
+}
+
+async fn cancel_run(
+    State(state): State<WorkstreamState>,
+    level: Option<Extension<AuthLevel>>,
+    AxumPath(raw_run_id): AxumPath<String>,
+) -> Response {
+    if let Err(response) = authorize(level, Capability::NormalWrite) {
+        return response.into_response();
+    }
+    let run_id = match parse_run_id(&raw_run_id) {
+        Ok(id) => id,
+        Err(response) => return response.into_response(),
+    };
+    match state.writer.cancel_managed_run(run_id).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(failure) => store_error_response(failure),
     }
 }
@@ -807,6 +826,31 @@ mod tests {
             Some("claude-current")
         );
         assert!(!prepared.may_adopt_existing_session);
+    }
+
+    #[tokio::test]
+    async fn cancel_endpoint_is_idempotent_and_releases_the_workstream() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::open(temp.path()).unwrap();
+        let state = test_state(&store, temp.path());
+        let (workspace_id, project_id) = seed_scope(&store).await;
+        let input = prepare_input(workspace_id, project_id, AgentKind::Codex, "launcher");
+        let prepared = store
+            .writer
+            .prepare_workstream_run(input.clone())
+            .await
+            .unwrap();
+
+        for _ in 0..2 {
+            let response = cancel_run(
+                State(state.clone()),
+                None,
+                AxumPath(prepared.run_id.to_string()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        }
+        store.writer.prepare_workstream_run(input).await.unwrap();
     }
 
     #[tokio::test]

@@ -179,17 +179,28 @@ specific native build. Native package, release, and source installs need no
 shim. On native Windows, use the published `ai-memory.exe` or a source build.
 
 The wrapper intercepts `run` before Docker and preserves the host `PATH`,
-`AI_MEMORY_SERVER_URL`, and authentication environment. If logs show
+`AI_MEMORY_SERVER_URL`, and authentication environment. The native client's
+startup log shows `server_url` as well as its local config paths; `data_dir` and
+`bind` describe local defaults and do not override a configured remote server.
+If logs show
 `data_dir=/data` followed by `starting managed ... No such file or directory`,
 the installed wrapper is stale and sent the command into the helper container.
 Run `ai-memory upgrade` on the client machine. A remote/homelab server must be
 upgraded separately.
 
-If a client is killed before final import, its lease expires. A later managed
-run starts from the last committed adapter cursor, so already linked native
-sessions can import the missing tail without duplicating earlier events. A
-server or authentication failure before process launch is fatal; ai-memory does
-not silently start an unmanaged agent.
+On a normal exit, ai-memory imports the transcript and closes the lease before
+returning. Handled setup, launch, or import failures cancel the lease
+immediately. A new launch retries an active-workstream conflict briefly so a
+previous launcher can finish; if another harness is genuinely still running,
+the conflict remains and concurrent writers are still rejected. Terminal
+interrupts continue to reach the child while the parent stays alive to finish
+or cancel the run.
+
+If the client is terminated without cleanup, such as with `kill -9`, its lease
+expires within 90 seconds. A later managed run starts from the last committed
+adapter cursor, so already linked native sessions can import the missing tail
+without duplicating earlier events. A server or authentication failure before
+process launch is fatal; ai-memory does not silently start an unmanaged agent.
 
 ## Privacy and storage boundaries
 

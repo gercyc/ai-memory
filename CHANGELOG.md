@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Managed launch failures now cancel their server lease immediately, and a new
+  launch waits briefly when the previous launcher is still finalizing. The
+  parent launcher also survives terminal interrupts long enough to finish or
+  cancel the run, preventing a normal quit-and-reopen from being blocked by the
+  90-second crash-recovery lease.
+- CLI startup diagnostics now show the configured server URL and use the real
+  host name in lease-owner messages, avoiding misleading `localhost` labels for
+  remote-server clients.
+
 ## [1.17.0] - 2026-07-20
 
 ### Added

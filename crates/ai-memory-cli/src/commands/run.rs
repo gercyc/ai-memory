@@ -4,6 +4,8 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use ai_memory_core::{
@@ -22,9 +24,13 @@ use tokio::process::Command;
 use crate::cli::{RunArgs, RunHarnessChoice};
 use crate::commands::{path_util, resolve_project_name};
 use crate::config::Config;
-use crate::http_client::{ServerEndpoint, get_json, post_empty, post_json, post_json_no_content};
+use crate::http_client::{
+    ServerEndpoint, ServerResponseError, get_json, post_empty, post_json, post_json_no_content,
+};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const PREPARE_BUSY_RETRY_WINDOW: Duration = Duration::from_secs(5);
+const PREPARE_BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const IMPORT_BATCH_EVENTS: usize = 400;
 const IMPORT_BATCH_BYTES: usize = 1024 * 1024;
 const ADOPTION_CANDIDATE_LIMIT: usize = 8;
@@ -96,10 +102,36 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
         new_workstream: args.new_workstream,
         lease_owner: lease_owner(),
     };
-    let prepared: PrepareManagedRunResponse = post_json(&endpoint, "/workstream/runs", &prepare)
+    let interrupted_before_spawn = Arc::new(AtomicBool::new(false));
+    let interrupt_task = tokio::spawn(capture_interrupts(Arc::clone(&interrupted_before_spawn)));
+    let prepared = prepare_managed_run(&endpoint, &prepare)
         .await
-        .context("opening managed workstream; the agent was not started")?;
+        .context("opening managed workstream; the agent was not started");
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            interrupt_task.abort();
+            return Err(error);
+        }
+    };
     let run_path = format!("/workstream/runs/{}", prepared.run_id);
+    macro_rules! acquired_try {
+        ($result:expr) => {
+            match $result {
+                Ok(value) => value,
+                Err(error) => {
+                    interrupt_task.abort();
+                    cancel_managed_run_after_failure(&endpoint, &run_path).await;
+                    return Err(error);
+                }
+            }
+        };
+    }
+    if interrupted_before_spawn.load(Ordering::SeqCst) {
+        acquired_try!(Err(anyhow!(
+            "managed run interrupted before the agent started"
+        )));
+    }
     let harness = if automatic_harness {
         let resolved = prepared.resolved_agent.unwrap_or_else(|| {
             eprintln!(
@@ -107,37 +139,39 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
             );
             provisional_harness.agent_kind()
         });
-        managed_harness_from_agent(resolved).ok_or_else(|| {
+        acquired_try!(managed_harness_from_agent(resolved).ok_or_else(|| {
             anyhow!(
                 "the server selected unsupported automatic harness '{}'",
                 resolved.as_str()
             )
-        })?
+        }))
     } else {
         provisional_harness
     };
-    ensure_executable_available(harness, executable.as_deref())?;
-    let mut plan = build_launch_plan(
+    acquired_try!(ensure_executable_available(harness, executable.as_deref()));
+    let mut plan = acquired_try!(build_launch_plan(
         harness,
         executable.clone(),
         native_args.clone(),
         prepared.native_session_id.as_deref(),
-    )?;
+    ));
     if automatic_harness
         && prepared.native_session_id.is_none()
         && prepared.may_adopt_existing_session
         && may_adopt_native_session
     {
-        let candidate = auto_candidates
-            .iter()
-            .find(|candidate| candidate.harness == harness)
-            .context("the selected automatic harness no longer has a checkout-local session")?;
-        plan = build_launch_plan(
+        let candidate = acquired_try!(
+            auto_candidates
+                .iter()
+                .find(|candidate| candidate.harness == harness)
+                .context("the selected automatic harness no longer has a checkout-local session")
+        );
+        plan = acquired_try!(build_launch_plan(
             harness,
             executable.clone(),
             native_args.clone(),
             Some(&candidate.session.native_session_id),
-        )?;
+        ));
         eprintln!(
             "ai-memory: continuing newest checkout-local {} session {}",
             harness.as_str(),
@@ -161,22 +195,24 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
         .await
         {
             Ok(candidates) if !candidates.is_empty() => {
-                let selection = choose_native_session_interactive(
-                    harness,
-                    prepared.workstream_name.clone(),
-                    candidates,
-                    &endpoint,
-                    &run_path,
-                )
-                .await?;
+                let selection = acquired_try!(
+                    choose_native_session_interactive(
+                        harness,
+                        prepared.workstream_name.clone(),
+                        candidates,
+                        &endpoint,
+                        &run_path,
+                    )
+                    .await
+                );
                 match selection {
                     Ok(Some(native_session_id)) => {
-                        plan = build_launch_plan(
+                        plan = acquired_try!(build_launch_plan(
                             harness,
                             executable,
                             native_args,
                             Some(&native_session_id),
-                        )?;
+                        ));
                     }
                     Ok(None) => {}
                     Err(error) => eprintln!(
@@ -198,22 +234,29 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
     if plan.mode == LaunchMode::Session
         && let Some(native_session_id) = &plan.expected_session_id
     {
-        post_json_no_content(
-            &endpoint,
-            &format!("{run_path}/link"),
-            &LinkManagedRunRequest {
-                native_session_id: native_session_id.clone(),
-            },
-        )
-        .await
-        .context("linking the managed native session; the agent was not started")?;
+        acquired_try!(
+            post_json_no_content(
+                &endpoint,
+                &format!("{run_path}/link"),
+                &LinkManagedRunRequest {
+                    native_session_id: native_session_id.clone(),
+                },
+            )
+            .await
+            .context("linking the managed native session; the agent was not started")
+        );
     }
 
     let crush_context = if harness == ManagedHarness::Crush && plan.mode == LaunchMode::Session {
-        prepare_crush_context(&endpoint, &run_path, &home).await?
+        acquired_try!(prepare_crush_context(&endpoint, &run_path, &home).await)
     } else {
         None
     };
+    if interrupted_before_spawn.load(Ordering::SeqCst) {
+        acquired_try!(Err(anyhow!(
+            "managed run interrupted before the agent started"
+        )));
+    }
 
     let started_at = SystemTime::now();
     let mut command = Command::new(&plan.program);
@@ -249,7 +292,13 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
                 )],
                 exit_code: None,
             };
-            let _ = finish_with_retry(&endpoint, &run_path, &request).await;
+            let finished = finish_with_retry(&endpoint, &run_path, &request)
+                .await
+                .is_ok();
+            interrupt_task.abort();
+            if !finished {
+                cancel_managed_run_after_failure(&endpoint, &run_path).await;
+            }
             return Err(anyhow!(spawn_message)).context(format!(
                 "starting managed {} executable {}",
                 harness.as_str(),
@@ -273,7 +322,7 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
     heartbeat.tick().await;
     let status = loop {
         tokio::select! {
-            result = child.wait() => break result.context("waiting for managed harness")?,
+            result = child.wait() => break acquired_try!(result.context("waiting for managed harness")),
             _ = heartbeat.tick() => {
                 if let Err(error) = post_empty(&endpoint, &format!("{run_path}/heartbeat")).await {
                     eprintln!("ai-memory: managed workstream heartbeat failed: {error}");
@@ -290,15 +339,17 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
     } else {
         None
     };
-    let native_session_id = resolve_native_session_after_run(
-        &plan,
-        harness,
-        &home,
-        &repository.cwd,
-        started_at,
-        server_status.as_ref(),
-    )
-    .await?;
+    let native_session_id = acquired_try!(
+        resolve_native_session_after_run(
+            &plan,
+            harness,
+            &home,
+            &repository.cwd,
+            started_at,
+            server_status.as_ref(),
+        )
+        .await
+    );
     let transcript = if plan.mode == LaunchMode::Session {
         let source_cursor = if native_session_id.as_deref() == prepared.native_session_id.as_deref()
         {
@@ -321,14 +372,16 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
     let checkpoint = inspect_repository(&repository.cwd)
         .map(|identity| identity.checkpoint)
         .unwrap_or(repository.checkpoint);
-    let imported = import_batches(
-        &endpoint,
-        &run_path,
-        transcript,
-        checkpoint,
-        Some(exit_code),
-    )
-    .await?;
+    let imported = acquired_try!(
+        import_batches(
+            &endpoint,
+            &run_path,
+            transcript,
+            checkpoint,
+            Some(exit_code),
+        )
+        .await
+    );
 
     if plan.mode == LaunchMode::Session
         && prepared.sync_through > prepared.sync_after
@@ -342,7 +395,28 @@ pub async fn run(config: &Config, args: RunArgs) -> Result<i32> {
         "ai-memory: workstream '{}' saved {imported} new event(s)",
         prepared.workstream_name
     );
+    interrupt_task.abort();
     Ok(exit_code)
+}
+
+async fn capture_interrupts(interrupted: Arc<AtomicBool>) {
+    while tokio::signal::ctrl_c().await.is_ok() {
+        interrupted.store(true, Ordering::SeqCst);
+    }
+}
+
+async fn cancel_managed_run_after_failure(endpoint: &ServerEndpoint, run_path: &str) {
+    if let Err(error) = post_empty_with_retry(
+        endpoint,
+        &format!("{run_path}/cancel"),
+        "releasing the managed workstream after a launcher failure",
+    )
+    .await
+    {
+        eprintln!(
+            "ai-memory: {error}; the orphaned lease will expire automatically within 90 seconds"
+        );
+    }
 }
 
 async fn resolve_native_session_after_run(
@@ -817,6 +891,60 @@ async fn finish_with_retry(
         .context("persisting the managed transcript; the native process has already exited")
 }
 
+async fn prepare_managed_run(
+    endpoint: &ServerEndpoint,
+    request: &PrepareManagedRunRequest,
+) -> Result<PrepareManagedRunResponse> {
+    prepare_managed_run_with_retry(
+        endpoint,
+        request,
+        PREPARE_BUSY_RETRY_WINDOW,
+        PREPARE_BUSY_RETRY_INTERVAL,
+    )
+    .await
+}
+
+async fn prepare_managed_run_with_retry(
+    endpoint: &ServerEndpoint,
+    request: &PrepareManagedRunRequest,
+    retry_window: Duration,
+    retry_interval: Duration,
+) -> Result<PrepareManagedRunResponse> {
+    let deadline = tokio::time::Instant::now() + retry_window;
+    let mut reported_wait = false;
+    loop {
+        match post_json(endpoint, "/workstream/runs", request).await {
+            Ok(response) => return Ok(response),
+            Err(error)
+                if is_active_workstream_conflict(&error)
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                if !reported_wait {
+                    eprintln!(
+                        "ai-memory: another launcher owns this workstream; waiting briefly in case it is finalizing"
+                    );
+                    reported_wait = true;
+                }
+                tokio::time::sleep(retry_interval).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_active_workstream_conflict(error: &anyhow::Error) -> bool {
+    let Some(response) = error.downcast_ref::<ServerResponseError>() else {
+        return false;
+    };
+    if response.status() != reqwest::StatusCode::CONFLICT {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(response.body())
+        .ok()
+        .and_then(|body| body.get("error")?.as_str().map(str::to_owned))
+        .is_some_and(|message| message.starts_with("workstream is already active:"))
+}
+
 async fn post_empty_with_retry(endpoint: &ServerEndpoint, path: &str, label: &str) -> Result<()> {
     let mut last_error = None;
     for attempt in 0..3 {
@@ -834,8 +962,14 @@ fn nonempty_session(value: &str) -> Option<String> {
 }
 
 fn lease_owner() -> String {
-    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string());
-    format!("{host}:{}", std::process::id())
+    let host = sysinfo::System::host_name()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .filter(|value| !value.trim().is_empty());
+    lease_owner_label(host.as_deref(), std::process::id())
+}
+
+fn lease_owner_label(host: Option<&str>, process_id: u32) -> String {
+    format!("{}:{process_id}", host.unwrap_or("localhost"))
 }
 
 const fn managed_harness(choice: RunHarnessChoice) -> ManagedHarness {
@@ -864,7 +998,13 @@ const fn managed_harness_from_agent(agent: AgentKind) -> Option<ManagedHarness> 
 mod tests {
     use std::ffi::{OsStr, OsString};
     use std::io::Cursor;
+    use std::sync::atomic::AtomicUsize;
 
+    use ai_memory_core::{ManagedRunId, WorkstreamId};
+    use axum::Router;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse as _;
+    use axum::routing::post;
     use clap::Parser as _;
 
     use super::*;
@@ -881,6 +1021,77 @@ mod tests {
                 updated_at: SystemTime::UNIX_EPOCH,
             },
         ]
+    }
+
+    #[test]
+    fn lease_owner_uses_the_resolved_host_and_process() {
+        assert_eq!(lease_owner_label(Some("workstation"), 42), "workstation:42");
+        assert_eq!(lease_owner_label(None, 42), "localhost:42");
+    }
+
+    #[tokio::test]
+    async fn prepare_waits_for_a_previous_launcher_to_finish() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let handler_attempts = Arc::clone(&attempts);
+        let app = Router::new().route(
+            "/workstream/runs",
+            post(move || {
+                let attempts = Arc::clone(&handler_attempts);
+                async move {
+                    if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
+                        return (
+                            StatusCode::CONFLICT,
+                            axum::Json(serde_json::json!({
+                                "error": "workstream is already active: owned by workstation:42"
+                            })),
+                        )
+                            .into_response();
+                    }
+                    axum::Json(PrepareManagedRunResponse {
+                        workstream_id: WorkstreamId::new(),
+                        workstream_name: "default".into(),
+                        run_id: ManagedRunId::new(),
+                        resolved_agent: Some(AgentKind::Codex),
+                        native_session_id: None,
+                        source_cursor: None,
+                        sync_after: 0,
+                        sync_through: 0,
+                        may_adopt_existing_session: false,
+                    })
+                    .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let endpoint = ServerEndpoint::from_pair(Some(format!("http://{address}")), None);
+        let request = PrepareManagedRunRequest {
+            workspace: "default".into(),
+            project: "project".into(),
+            cwd: "/tmp/project".into(),
+            repo_fingerprint: "repo".into(),
+            worktree_fingerprint: "worktree".into(),
+            agent: AgentKind::Codex,
+            automatic_harness: false,
+            available_agents: Vec::new(),
+            workstream: None,
+            new_workstream: None,
+            lease_owner: "workstation:43".into(),
+        };
+
+        let prepared = prepare_managed_run_with_retry(
+            &endpoint,
+            &request,
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(prepared.workstream_name, "default");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        server.abort();
     }
 
     fn auto_candidate(harness: ManagedHarness, updated: u64) -> AutoSessionCandidate {

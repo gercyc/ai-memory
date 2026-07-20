@@ -269,6 +269,10 @@ pub(crate) enum WriteCmd {
         run_id: ManagedRunId,
         reply: oneshot::Sender<StoreResult<bool>>,
     },
+    CancelManagedRun {
+        run_id: ManagedRunId,
+        reply: oneshot::Sender<StoreResult<bool>>,
+    },
     LinkManagedRunSession {
         run_id: ManagedRunId,
         agent: AgentKind,
@@ -1072,6 +1076,14 @@ impl WriterHandle {
         rx.await.map_err(|_| StoreError::WriterClosed)?
     }
 
+    /// Release a managed-run lease after a handled launcher failure.
+    pub async fn cancel_managed_run(&self, run_id: ManagedRunId) -> StoreResult<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::CancelManagedRun { run_id, reply: tx })
+            .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
     /// Attach the harness-native session observed by a managed SessionStart.
     pub async fn link_managed_run_session(
         &self,
@@ -1471,6 +1483,10 @@ fn worker_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriteCmd>) {
             WriteCmd::HeartbeatManagedRun { run_id, reply } => {
                 let result = crate::workstream::heartbeat(&mut conn, run_id);
                 send_or_warn(reply, result, "heartbeat_managed_run");
+            }
+            WriteCmd::CancelManagedRun { run_id, reply } => {
+                let result = crate::workstream::cancel_run(&mut conn, run_id);
+                send_or_warn(reply, result, "cancel_managed_run");
             }
             WriteCmd::LinkManagedRunSession {
                 run_id,

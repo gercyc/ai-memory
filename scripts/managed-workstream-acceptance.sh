@@ -162,6 +162,7 @@ set -e
 (
   cd "$REPO"
   AI_MEMORY_ACCEPTANCE_FAKE_MODE=lease \
+  AI_MEMORY_ACCEPTANCE_SLEEP=7 \
   AI_MEMORY_ACCEPTANCE_STARTED="$TMP/lease-started" \
     "$BIN" --data-dir "$DATA" run --new edge-lease --executable "$FAKE" \
       codex >"$LOGS/edge-lease-owner.log" 2>&1
@@ -263,6 +264,28 @@ auto_claude_id=${auto_claude_first[1]}
 )
 diff -u <(printf '%s\n' --resume "$auto_claude_id") \
   "$TMP/auto-managed-precedence-argv.log"
+
+# A handled failure after lease acquisition must release immediately. A
+# malformed Crush config fails after context fetch; the next run below would
+# hit a stale 409 if cancellation were missing.
+BAD_CRUSH_CONFIG="$CONFIG/bad-crush"
+mkdir -p "$BAD_CRUSH_CONFIG"
+printf '{not-json\n' >"$BAD_CRUSH_CONFIG/crush.json"
+set +e
+(
+  cd "$REPO"
+  HOME="$AUTO_HOME" CRUSH_GLOBAL_CONFIG="$BAD_CRUSH_CONFIG" \
+    AI_MEMORY_ACCEPTANCE_FAKE_MODE=crush \
+    "$BIN" --data-dir "$DATA" run --workspace edge-auto --project edge-auto \
+      --executable "$FAKE" crush >"$LOGS/edge-crush-invalid-config.log" 2>&1
+)
+bad_crush_code=$?
+set -e
+[ "$bad_crush_code" -ne 0 ] || {
+  printf 'malformed Crush config unexpectedly succeeded\n' >&2
+  exit 1
+}
+grep -q 'parsing Crush config' "$LOGS/edge-crush-invalid-config.log"
 
 # Crush has no SessionStart hook. Verify the launcher fetches the packet into a
 # temporary supported global-context config, then removes it after exit.
