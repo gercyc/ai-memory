@@ -150,9 +150,11 @@ priors are at the [bottom](#influences-and-prior-art).
   The first explicit run can offer an existing session from this exact checkout
   or start a new one. Switching harnesses starts or resumes the native session
   linked to the shared workstream, so an obsolete local session cannot replace
-  newer cross-harness history. Managed mode currently covers Claude Code,
-  Codex, OpenCode, Pi, Crush, and OMP; direct harness launches remain unchanged.
-  See [Managed cross-harness workstreams](docs/managed-workstreams.md).
+  newer cross-harness history. After a normal quit, the next launch waits
+  briefly if the previous launcher is still finalizing; handled failures release
+  the workstream immediately. Managed mode currently covers Claude Code, Codex,
+  OpenCode, Pi, Crush, and OMP; direct harness launches remain unchanged. See
+  [Managed cross-harness workstreams](docs/managed-workstreams.md).
 - **"Quit at 4 PM, pick up at 9 AM in a different agent."** The
   classic. SessionStart hook in the next supported hook client prepends a
   typed handoff with open questions, next steps, and a session summary. Grok

@@ -59,6 +59,7 @@ async fn main() -> Result<()> {
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
+        server_url = %config.server_url,
         data_dir = %config.data_dir.display(),
         bind = %config.bind,
         "ai-memory starting",

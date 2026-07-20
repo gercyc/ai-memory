@@ -420,6 +420,17 @@ pub(crate) fn heartbeat(conn: &mut Connection, run_id: ManagedRunId) -> StoreRes
     Ok(changed > 0)
 }
 
+/// Release an active managed-run lease without importing any events.
+pub(crate) fn cancel_run(conn: &mut Connection, run_id: ManagedRunId) -> StoreResult<bool> {
+    let now = Timestamp::now().as_microsecond();
+    let changed = conn.execute(
+        "UPDATE managed_runs SET state = 'expired', ended_at = ?1, lease_expires_at = ?1 \
+         WHERE id = ?2 AND state = 'active'",
+        params![now, run_id.as_bytes()],
+    )?;
+    Ok(changed > 0)
+}
+
 /// Link the native session reported by a managed child hook.
 pub(crate) fn link_native_session(
     conn: &mut Connection,

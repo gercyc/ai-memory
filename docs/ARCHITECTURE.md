@@ -117,7 +117,9 @@ the bounded startup packet. An interactive empty workstream may adopt a
 checkout-matching native session once. Eligibility comes from authoritative
 ledger/session state: after any harness establishes the workstream, a newly
 joining harness starts fresh and receives portable history instead of adopting
-unrelated old native history. See [Managed cross-harness
+unrelated old native history. Handled launcher failures cancel their lease;
+normal reopen retries brief finalization conflicts, while an unclean process
+death remains bounded by the renewable lease expiry. See [Managed cross-harness
 workstreams](managed-workstreams.md).
 
 ## Hook event vocabulary
