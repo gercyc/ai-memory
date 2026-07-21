@@ -14,6 +14,18 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
+/// Claude Code's relocated config root: `$CLAUDE_CONFIG_DIR` when set to a
+/// non-empty, non-whitespace value, else `None` (callers fall back to the
+/// `~/.claude*` defaults). The env value comes in as a parameter so tests
+/// can exercise both branches without mutating process env.
+pub(crate) fn claude_config_dir(env_override: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let value = env_override?;
+    if value.to_str().is_some_and(|s| s.trim().is_empty()) {
+        return None;
+    }
+    Some(PathBuf::from(value))
+}
+
 /// Strip only Windows verbatim path prefixes that are safe to render as plain
 /// paths. Unknown verbatim forms are left unchanged.
 pub(crate) fn strip_windows_verbatim_prefix(path: &str) -> Cow<'_, str> {
@@ -45,6 +57,22 @@ pub(crate) fn strip_windows_verbatim_prefix(path: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn claude_config_dir_honours_non_empty_value() {
+        assert_eq!(
+            claude_config_dir(Some(OsString::from("/stores/claude"))),
+            Some(PathBuf::from("/stores/claude"))
+        );
+    }
+
+    #[test]
+    fn claude_config_dir_treats_unset_empty_and_whitespace_as_unset() {
+        for env in [None, Some(OsString::new()), Some(OsString::from("   "))] {
+            assert_eq!(claude_config_dir(env.clone()), None, "env {env:?}");
+        }
+    }
 
     #[test]
     fn strip_windows_verbatim_prefix_handles_drive_paths() {

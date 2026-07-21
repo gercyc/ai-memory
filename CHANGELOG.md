@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `install-mcp --client claude-code` and `uninstall` now honour
+  `CLAUDE_CONFIG_DIR`: MCP registrations go to
+  `$CLAUDE_CONFIG_DIR/.claude.json` when the variable is set (non-empty),
+  falling back to `~/.claude.json` otherwise. The dry-run output prints the
+  resolved config path instead of a hardcoded `~/.claude.json`.
+
 ## [1.17.1] - 2026-07-20
 
 ### Fixed
