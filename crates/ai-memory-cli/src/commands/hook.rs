@@ -330,10 +330,10 @@ where
     };
     // Defensively drop any raw assistant-message field (e.g. Claude Code's
     // `last_assistant_message` on Stop) BEFORE it can reach the local spool or
-    // the wire (#196). The explicit opt-in capture path lands in a later PR;
-    // today this field is never persisted, so stripping it pre-spool closes a
-    // raw-text exposure with no behavior change. Reserialize only when we
-    // actually removed something, so unrelated events keep byte-exact spool
+    // the wire (#196). Optional capture remains disabled, so stripping it
+    // pre-spool closes a raw-text exposure with no persisted-data behavior
+    // change. Reserialize only when we actually removed something, so unrelated
+    // events keep byte-exact spool
     // bodies (see `native_hook_accepts_plain_and_bom_prefixed_json`).
     if ai_memory_hooks::strip_assistant_message_raw(&mut json) {
         payload = serde_json::to_string(&json)?;

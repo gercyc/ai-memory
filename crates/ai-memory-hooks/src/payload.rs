@@ -107,11 +107,8 @@ pub struct HookEnvelope {
     pub raw: serde_json::Value,
 }
 
-/// Manual `Debug` that never renders `raw` (#196). `raw` is the agent's full
-/// payload; a stray `?env` / `%env` in a future tracing span would otherwise
-/// copy it verbatim into the rolling log file on disk — including the opt-in
-/// assistant excerpt landing in a later PR. Every other field stays visible so
-/// the envelope is still debuggable.
+/// Manual `Debug` that omits raw and derived hook content. A stray `?env` or
+/// `%env` in a tracing span must not copy prompt or tool content into logs.
 impl std::fmt::Debug for HookEnvelope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HookEnvelope")
@@ -127,10 +124,17 @@ impl std::fmt::Debug for HookEnvelope {
                 "recall_default_global_requested",
                 &self.recall_default_global_requested,
             )
+            .field("managed_run", &self.managed_run)
             .field("extension", &self.extension)
             .field("source_event", &self.source_event)
-            .field("title_hint", &self.title_hint)
-            .field("body_excerpt", &self.body_excerpt)
+            .field(
+                "title_hint",
+                &self.title_hint.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "body_excerpt",
+                &self.body_excerpt.as_ref().map(|_| "<redacted>"),
+            )
             .field("raw", &"<redacted>")
             .finish()
     }
@@ -821,29 +825,36 @@ mod tests {
     }
 
     #[test]
-    fn debug_never_renders_raw_payload() {
-        // `raw` holds the agent's full payload; the manual Debug impl must redact
-        // it so a stray `?env` in a tracing span cannot copy it into the rolling
-        // log file on disk (#196). Other fields stay visible for debugging.
+    fn debug_never_renders_hook_content() {
         let env = HookEnvelope::from_query_and_body(
             HookQuery {
-                event: "stop".into(),
+                event: "user-prompt".into(),
                 agent: Some("claude-code".into()),
+                managed_run: Some("run-1".into()),
                 ..Default::default()
             },
             serde_json::json!({
                 "session_id": "dbg",
-                "secret": "SENTINEL_RAW_PAYLOAD"
+                "prompt": "SENTINEL_DERIVED_CONTENT",
+                "secret": "SENTINEL_RAW_PAYLOAD",
             }),
+        );
+        assert_eq!(
+            env.body_excerpt.as_deref(),
+            Some("SENTINEL_DERIVED_CONTENT")
         );
         let rendered = format!("{env:?}");
         assert!(
             !rendered.contains("SENTINEL_RAW_PAYLOAD"),
             "Debug leaked the raw payload: {rendered}"
         );
+        assert!(
+            !rendered.contains("SENTINEL_DERIVED_CONTENT"),
+            "Debug leaked derived hook content: {rendered}"
+        );
         assert!(rendered.contains("<redacted>"), "raw was not redacted");
-        // Sanity: the redaction did not blank the whole struct.
-        assert!(rendered.contains("Stop"), "event field went missing");
+        assert!(rendered.contains("UserPrompt"), "event field went missing");
+        assert!(rendered.contains("run-1"), "managed run field went missing");
     }
 
     #[test]

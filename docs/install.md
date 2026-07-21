@@ -382,9 +382,9 @@ capability output reflects the selected integration. See the canonical
 
 Some agent harnesses attach the assistant's final turn to their `Stop` event —
 Claude Code sends it as a raw `last_assistant_message`. That text is never
-persisted, and the native hook binary now strips the raw field before it can
-reach the local spool or the wire; the server strips it defensively on arrival
-too. Explicit, sanitized opt-in capture of this text ships in a later release.
+persisted, and the native hook binary strips the raw field before it can reach
+the local spool or the wire; the server strips it defensively on arrival too.
+Optional assistant/Stop capture proposed in issue #196 remains disabled.
 Upgrading the binary is sufficient for native Claude Code installs, and pending
 spooled events drain with the field stripped as well. Installs that run the
 `.sh`/`.ps1` script fallback (the Docker script bundle or an explicit

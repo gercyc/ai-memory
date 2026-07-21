@@ -95,8 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stripped too. The server applies the same strip defensively on `/hook` and
   `/hook/batch` before building an envelope. This field was already never
   persisted, so there is no behavior change; it closes a raw-text exposure in
-  the spool/wire ahead of the opt-in assistant/Stop capture landing in a later
-  release. Upgrading the binary is sufficient for native Claude Code installs;
+  the spool/wire. Optional assistant/Stop capture proposed in #196 remains
+  disabled. Upgrading the binary is sufficient for native Claude Code installs;
   script-fallback installs (Docker wrapper, `AI_MEMORY_HOOK_PLATFORM=posix`)
   should run `ai-memory install-hooks --agent claude-code --apply` to migrate to
   native commands and close the residual local-wire vector ([#196]).

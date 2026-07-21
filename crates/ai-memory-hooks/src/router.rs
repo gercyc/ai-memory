@@ -439,7 +439,7 @@ async fn handle_hook(
     actor_ext: Option<axum::Extension<ai_memory_core::ActorContext>>,
     Json(mut body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // Incondicional backstop (#196): drop any raw assistant-message field on the
+    // Unconditional backstop (#196): drop any raw assistant-message field on the
     // `Value` before it becomes a `HookEnvelope`, so the field can never reach
     // `body_excerpt`, tracing, or the store — regardless of client version.
     crate::assistant_capture::strip_assistant_message_raw(&mut body);
