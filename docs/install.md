@@ -1046,7 +1046,7 @@ Advanced users with a pre-minted Copilot API token can set
 Pass `--client-id` or set `AI_MEMORY_COPILOT_CLIENT_ID` if you operate your own
 OAuth app.
 
-### Self-hosted LLMs (Ollama / vLLM / LM Studio / OpenRouter)
+### OpenAI-compatible providers (Ollama / vLLM / LM Studio / hosted APIs)
 
 ```bash
 docker run -d --name ai-memory \
@@ -1068,6 +1068,20 @@ required. For OpenRouter (Kimi, DeepSeek, etc.):
 -e AI_MEMORY_LLM_MODEL=moonshotai/kimi-k2.6
 -e LLM_API_KEY=sk-or-v1-...
 ```
+
+[Atlas Cloud](https://www.atlascloud.ai/models/qwen/qwen3.5-flash) uses the
+same provider; no Atlas-specific ai-memory provider is needed. Pass its API key
+through the generic compatibility credential:
+
+```bash
+-e AI_MEMORY_LLM_PROVIDER=openai-compat
+-e AI_MEMORY_LLM_BASE_URL=https://api.atlascloud.ai/v1
+-e AI_MEMORY_LLM_MODEL=qwen/qwen3.5-flash
+-e LLM_API_KEY="$ATLASCLOUD_API_KEY"
+```
+
+Replace the model with another current Atlas model id when needed. ai-memory
+does not select a default for hosted compatibility endpoints.
 
 Modern Ollama, vLLM, LM Studio, llama.cpp, and gateway endpoints may honour
 OpenAI-style `response_format=json_schema`. If the tolerant default parser fails

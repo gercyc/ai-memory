@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Documented Atlas Cloud through the existing `openai-compat` provider instead
+  of adding a redundant provider type, including the endpoint, model, and API
+  key mapping needed for deployment.
 - The native hook binary now drops any raw assistant-message field (Claude
   Code's `last_assistant_message` on `Stop`) before it can reach the local
   spool or the wire, and drains pre-existing spooled entries with the field
