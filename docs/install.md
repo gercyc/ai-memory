@@ -388,6 +388,18 @@ Docker script bundles do not enforce it. Re-run `install-hooks --agent <agent>
 capability output reflects the selected integration. See the canonical
 [capture exclusions reference](marker-file.md#capture-exclusions).
 
+Some agent harnesses attach the assistant's final turn to their `Stop` event —
+Claude Code sends it as a raw `last_assistant_message`. That text is never
+persisted, and the native hook binary strips the raw field before it can reach
+the local spool or the wire; the server strips it defensively on arrival too.
+Optional assistant/Stop capture proposed in issue #196 remains disabled.
+Upgrading the binary is sufficient for native Claude Code installs, and pending
+spooled events drain with the field stripped as well. Installs that run the
+`.sh`/`.ps1` script fallback (the Docker script bundle or an explicit
+`AI_MEMORY_HOOK_PLATFORM=posix`) still POST the raw field on the local wire
+until they move to native commands: run `install-hooks --agent claude-code
+--apply`, which installs native `ai-memory hook` commands where supported.
+
 Native `ai-memory hook --event ...` commands spool events locally. Session start
 does a short bounded cleanup drain before fetching a handoff; cancellation-prone
 boundary events (`stop`, `pre-compact`, and `session-end`) start a detached
@@ -1042,7 +1054,7 @@ Advanced users with a pre-minted Copilot API token can set
 Pass `--client-id` or set `AI_MEMORY_COPILOT_CLIENT_ID` if you operate your own
 OAuth app.
 
-### Self-hosted LLMs (Ollama / vLLM / LM Studio / OpenRouter)
+### OpenAI-compatible providers (Ollama / vLLM / LM Studio / hosted APIs)
 
 ```bash
 docker run -d --name ai-memory \
@@ -1064,6 +1076,20 @@ required. For OpenRouter (Kimi, DeepSeek, etc.):
 -e AI_MEMORY_LLM_MODEL=moonshotai/kimi-k2.6
 -e LLM_API_KEY=sk-or-v1-...
 ```
+
+[Atlas Cloud](https://www.atlascloud.ai/models/qwen/qwen3.5-flash) uses the
+same provider; no Atlas-specific ai-memory provider is needed. Pass its API key
+through the generic compatibility credential:
+
+```bash
+-e AI_MEMORY_LLM_PROVIDER=openai-compat
+-e AI_MEMORY_LLM_BASE_URL=https://api.atlascloud.ai/v1
+-e AI_MEMORY_LLM_MODEL=qwen/qwen3.5-flash
+-e LLM_API_KEY="$ATLASCLOUD_API_KEY"
+```
+
+Replace the model with another current Atlas model id when needed. ai-memory
+does not select a default for hosted compatibility endpoints.
 
 Modern Ollama, vLLM, LM Studio, llama.cpp, and gateway endpoints may honour
 OpenAI-style `response_format=json_schema`. If the tolerant default parser fails
