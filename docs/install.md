@@ -68,6 +68,18 @@ ai-memory install-mcp   --client claude-code --apply
 ai-memory install-hooks --agent  claude-code --apply
 ```
 
+If `CLAUDE_CONFIG_DIR` is set, the claude-code installers match Claude Code's
+own config resolution: `install-mcp` writes the MCP registration to
+`$CLAUDE_CONFIG_DIR/.claude.json` (instead of `~/.claude.json`),
+`install-hooks` / `setup-agent` target `$CLAUDE_CONFIG_DIR/settings.json`
+(instead of `~/.claude/settings.json`), and `install-skills --scope global`
+uses `$CLAUDE_CONFIG_DIR/skills` (instead of `~/.claude/skills`). `uninstall`
+sweeps the active relocated paths alongside the home defaults. It cannot
+discover an older arbitrary `CLAUDE_CONFIG_DIR` that is no longer set. The
+Docker wrapper forwards the variable for config roots under its existing
+`$HOME` bind mount; use the native binary when the relocated root is outside
+`$HOME`.
+
 The CLI commands (`bootstrap`, `status`, `search`, `lint`, `auto-improve`,
 `curator`, `pending-writes`, etc.) inherit the two env vars automatically. So do
 `install-mcp`, `install-hooks`, and
