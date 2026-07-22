@@ -508,9 +508,11 @@ fi
 # `commands::resolve_project_name` helper checks this env var first
 # and falls back to the cwd basename only if it's unset.
 HELPER_ARGS=(run --rm)
-HELPER_ARGS+=("${TTY_ARGS[@]}")
-HELPER_ARGS+=("${NETWORK_ARGS[@]}")
-HELPER_ARGS+=("${SELINUX_ARGS[@]}")
+# Bash 3.2 (still shipped by macOS) rejects an empty-array expansion under
+# `set -u`. The `array[@]+...` form appends only arrays with at least one item.
+HELPER_ARGS+=(${TTY_ARGS[@]+"${TTY_ARGS[@]}"})
+HELPER_ARGS+=(${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"})
+HELPER_ARGS+=(${SELINUX_ARGS[@]+"${SELINUX_ARGS[@]}"})
 HELPER_ARGS+=(
   -v "${HOME}:${HOME}"
   -v "${PWD}:/work"
@@ -518,9 +520,9 @@ HELPER_ARGS+=(
   -e HOME="${HOME}"
   -e AI_MEMORY_HOST_CWD="${PWD}"
 )
-HELPER_ARGS+=("${USER_ARGS[@]}")
+HELPER_ARGS+=(${USER_ARGS[@]+"${USER_ARGS[@]}"})
 HELPER_ARGS+=("${DATA_ARGS[@]}")
-HELPER_ARGS+=("${ENV_ARGS[@]}")
+HELPER_ARGS+=(${ENV_ARGS[@]+"${ENV_ARGS[@]}"})
 HELPER_ARGS+=("${IMAGE}" "$@")
 
 # The native binary renders completions into a buffer so a short consumer such
