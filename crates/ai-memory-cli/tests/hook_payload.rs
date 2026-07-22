@@ -39,12 +39,18 @@ fn run_hook_event(data_dir: &Path, event: &str, payload: &[u8]) -> Output {
     child.wait_with_output().expect("wait for native hook")
 }
 
-fn spooled_body(data_dir: &Path) -> String {
-    let spool = data_dir.join("hook-spool");
-    let entries = std::fs::read_dir(spool)
+fn spool_entries(data_dir: &Path) -> Vec<std::fs::DirEntry> {
+    std::fs::read_dir(data_dir.join("hook-spool"))
         .expect("hook spool")
         .collect::<Result<Vec<_>, _>>()
-        .expect("spool entries");
+        .expect("spool entries")
+        .into_iter()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .collect()
+}
+
+fn spooled_body(data_dir: &Path) -> String {
+    let entries = spool_entries(data_dir);
     assert_eq!(entries.len(), 1);
     let entry: serde_json::Value =
         serde_json::from_slice(&std::fs::read(entries[0].path()).expect("read spool entry"))
@@ -98,8 +104,8 @@ fn malformed_native_hook_payload_warns_without_leaking_or_spooling() {
 #[test]
 fn stop_hook_strips_last_assistant_message_from_spool_and_stderr() {
     // A well-formed Stop payload carrying Claude Code's `last_assistant_message`
-    // must be spooled WITHOUT that raw field (#196): the opt-in capture path
-    // lands later; until then the field never reaches spool, wire, or stderr.
+    // must be spooled WITHOUT that raw field (#196). Optional capture remains
+    // disabled, so the field must not reach the spool, wire, or stderr.
     let tmp = tempfile::tempdir().expect("tempdir");
     let payload = br#"{"session_id":"stop-strip","cwd":"/tmp/project","last_assistant_message":"SENTINEL_ASSISTANT_MESSAGE"}"#;
 
@@ -139,11 +145,7 @@ fn spool_files_never_leak_the_assistant_field_on_disk() {
     let output = run_hook_event(tmp.path(), "stop", payload);
     assert!(output.status.success());
 
-    let spool = tmp.path().join("hook-spool");
-    let entries = std::fs::read_dir(&spool)
-        .expect("hook spool")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("spool entries");
+    let entries = spool_entries(tmp.path());
     assert_eq!(entries.len(), 1);
     let bytes = std::fs::read(entries[0].path()).expect("read spool entry");
     let text = String::from_utf8_lossy(&bytes);
