@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.2] - 2026-07-22
+
 ### Added
 - `ai-memory completions <shell>` prints a shell-completion script for bash,
   zsh, fish, PowerShell, or elvish. The script is generated from the binary's
@@ -31,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native commands and close the residual local-wire vector ([#196]).
 
 ### Fixed
+- Removed the unused `syntect` dependency and its `plist`, `quick-xml`,
+  `bincode`, and `yaml-rust` transitive dependencies. This eliminates two
+  high-severity `quick-xml` denial-of-service advisories and makes the prior
+  temporary cargo-audit exceptions unnecessary; ai-memory's rendered Markdown
+  behavior is unchanged because the syntax-highlighting crate was never used.
 - The Docker wrapper now buffers generated shell completions before streaming
   them to stdout. Piping `ai-memory completions <shell>` into a short-lived
   consumer such as `head` no longer exposes Docker's own broken-pipe error or
@@ -2162,7 +2169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.17.1...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.17.2...HEAD
+[1.17.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.17.2
 [1.17.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.17.1
 [1.17.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.17.0
 [1.16.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.16.0
