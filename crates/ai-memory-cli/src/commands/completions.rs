@@ -36,8 +36,38 @@ pub fn run(args: CompletionsArgs) -> Result<()> {
     let mut script = Vec::new();
     generate(args.shell, &mut cmd, bin_name, &mut script);
 
-    match std::io::stdout().write_all(&script) {
+    let stdout = std::io::stdout();
+    write_script(stdout.lock(), &script)
+}
+
+fn write_script(mut output: impl Write, script: &[u8]) -> Result<()> {
+    match output.write_all(script) {
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
         other => other.context("writing completion script to stdout"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "reader closed",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn closed_output_pipe_is_a_clean_exit() {
+        write_script(ClosedPipe, b"completion script").unwrap();
     }
 }

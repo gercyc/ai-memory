@@ -1121,10 +1121,12 @@ docker exec ai-memory ai-memory search "karpathy"
 docker exec ai-memory ai-memory backup --to /data/snapshot.tar.gz
 
 # B) One-shot, no running container needed for pure-stdout helpers
-#    (generate-auth-token, install-mcp, install-hooks, setup-agent, llm-test).
+#    (generate-auth-token, completions, install-mcp, install-hooks, setup-agent,
+#    llm-test).
 #    Auth login is stateful: use docker exec against the running container or
 #    the wrapper so it writes into the same data volume as the server.
 docker run --rm akitaonrails/ai-memory:latest generate-auth-token
+docker run --rm akitaonrails/ai-memory:latest completions zsh
 docker run --rm akitaonrails/ai-memory:latest install-mcp --client cursor
 docker run --rm akitaonrails/ai-memory:latest --help     # full subcommand tree
 ```

@@ -13,10 +13,12 @@ fn ai_memory_bin() -> std::path::PathBuf {
 }
 
 fn completions_for(shell: &str) -> String {
+    let temp = tempfile::tempdir().unwrap();
+    let missing_data_dir = temp.path().join("missing-data");
     let out = Command::new(ai_memory_bin())
         // Point config + data dir at a path that does not exist: generating a
         // completion script must not read, create, or require either.
-        .env("AI_MEMORY_DATA_DIR", "/nonexistent/ai-memory-completions")
+        .env("AI_MEMORY_DATA_DIR", &missing_data_dir)
         .args(["completions", shell])
         .output()
         .unwrap_or_else(|e| panic!("failed to run `completions {shell}`: {e}"));
@@ -26,6 +28,15 @@ fn completions_for(shell: &str) -> String {
         "`completions {shell}` exited with {:?}: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "`completions {shell}` polluted stderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        !missing_data_dir.exists(),
+        "`completions {shell}` created its configured data directory",
     );
     String::from_utf8(out.stdout).expect("completion script should be UTF-8")
 }
@@ -51,7 +62,16 @@ fn scripts_cover_subcommands_from_across_the_tree() {
     // regression in how the command tree is handed to the generator shows up.
     for shell in ["bash", "fish", "zsh"] {
         let script = completions_for(shell);
-        for subcommand in ["init", "serve", "write-page", "purge-project", "user"] {
+        for subcommand in [
+            "init",
+            "serve",
+            "write-page",
+            "purge-project",
+            "user",
+            "rotate-token",
+            "auth",
+            "login",
+        ] {
             assert!(
                 script.contains(subcommand),
                 "{shell} completion script is missing `{subcommand}`",

@@ -6,6 +6,10 @@ the binary's own command tree, so it covers every subcommand and flag of the
 version that produced it — including nested commands like `user rotate-token`
 and `auth login`.
 
+The Docker wrapper's `upgrade` command is wrapper-owned rather than part of the
+native clap command tree, so it is the one subcommand not present in generated
+completions.
+
 The command reads no config and does not need a data directory, so it can be
 run before `ai-memory init` or inside a packaging step.
 
@@ -14,6 +18,7 @@ run before `ai-memory init` or inside a packaging step.
 ### fish
 
 ```fish
+mkdir -p ~/.config/fish/completions
 ai-memory completions fish > ~/.config/fish/completions/ai-memory.fish
 ```
 
@@ -59,15 +64,24 @@ source <(ai-memory completions bash)
 ai-memory completions powershell | Out-String | Invoke-Expression
 ```
 
-To persist it, append that line to the file at `$PROFILE`:
+To persist the generated script, keep it beside your PowerShell profile and
+dot-source it from `$PROFILE` once:
 
 ```powershell
-ai-memory completions powershell >> $PROFILE
+$completionDir = Join-Path (Split-Path -Parent $PROFILE) "completions"
+$completionPath = Join-Path $completionDir "ai-memory.ps1"
+New-Item -ItemType Directory -Force $completionDir | Out-Null
+ai-memory completions powershell | Set-Content -Encoding utf8 $completionPath
+Add-Content -Path $PROFILE -Value ". '$completionPath'"
 ```
+
+After upgrades, regenerate `$completionPath`; the profile line does not need to
+be added again.
 
 ### elvish
 
 ```elvish
+mkdir -p ~/.config/elvish/lib
 ai-memory completions elvish > ~/.config/elvish/lib/ai-memory.elv
 ```
 
