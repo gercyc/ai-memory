@@ -224,8 +224,8 @@ ai_memory_marker_qs() {
 # NOT part of ai_memory_marker_qs on purpose: agents that deliver the brief
 # once per session (kimi-code, via the first user prompt — kimi discards
 # SessionStart hook stdout) append this only on the first fetch, so the
-# server does not recompose the brief on every request. Truthiness and the
-# char-budget clamp are decided server-side.
+# server does not recompose the brief on every request. The char-budget clamp
+# is decided server-side.
 ai_memory_briefing_qs() {
     cwd="$1"
     [ -z "$cwd" ] && return 0
@@ -233,8 +233,12 @@ ai_memory_briefing_qs() {
     [ -n "$marker" ] || return 0
     qs=""
     briefing=$(ai_memory_parse_toml_flag "$marker" inject_on_session_start)
+    case "$(printf '%s' "$briefing" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on) ;;
+        *) return 0 ;;
+    esac
     budget=$(ai_memory_parse_toml_flag "$marker" max_chars)
-    [ -n "$briefing" ] && qs="&briefing=$(ai_memory_url_encode "$briefing")"
+    qs="&briefing=$(ai_memory_url_encode "$briefing")"
     [ -n "$budget" ] && qs="${qs}&briefing_budget=$(ai_memory_url_encode "$budget")"
     printf '%s' "$qs"
 }
@@ -245,6 +249,21 @@ ai_memory_briefing_qs() {
 ai_memory_briefed_file() {
     key=$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')
     printf '%s/briefed/%s' "$(ai_memory_state_dir)" "$key"
+}
+
+# Write a once-per-session briefing marker and keep only the 512 newest
+# markers. All marker names are sanitized by ai_memory_briefed_file.
+ai_memory_mark_briefed() {
+    path="$1"
+    [ -n "$path" ] || return 0
+    dir=$(dirname "$path")
+    mkdir -p "$dir" 2>/dev/null || return 0
+    : > "$path" 2>/dev/null || return 0
+    LC_ALL=C ls -1t "$dir" 2>/dev/null \
+        | sed -n '513,$p' \
+        | while IFS= read -r stale; do
+            [ -n "$stale" ] && rm -f "$dir/$stale" 2>/dev/null || true
+        done
 }
 
 # Local bridge state for agents whose hook payloads do not carry a session id.

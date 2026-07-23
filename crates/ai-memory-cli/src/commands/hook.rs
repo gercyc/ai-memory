@@ -27,7 +27,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::hook_capture::{
     build_client, canonical_context, capture_policy, extract_cwd, get_handoff, marker_query_suffix,
-    marker_query_suffix_without_briefing, resolve_cwd_with_fallbacks, url_encode,
+    marker_query_suffix_without_briefing, marker_requests_briefing, resolve_cwd_with_fallbacks,
+    url_encode,
 };
 use super::hook_drain_process;
 use super::hook_spool;
@@ -54,6 +55,7 @@ const MANAGED_RUN_ENV: &str = "AI_MEMORY_RUN_ID";
 /// Backlog size at which `post-tool-use` does a mid-session catch-up drain, so a
 /// light session pays only a `read_dir`. Override via the env var above.
 const DEFAULT_INCREMENTAL_THRESHOLD: usize = 32;
+const MAX_BRIEFED_MARKERS: usize = 512;
 /// Total budget AND per-event timeout for the mid-session catch-up drain — kept
 /// well under a second so a `post-tool-use` hook never stalls a tool call (one
 /// in-flight POST against a slow server is bounded by this too).
@@ -159,9 +161,9 @@ fn clear_session_id(data_dir: &Path, agent: AgentKind) {
 /// hook stdout, so the brief rides the FIRST user prompt of the session
 /// (parity with Claude's once-per-SessionStart brief); the marker keeps
 /// later prompts from re-requesting it. Keyed by the payload's canonical
-/// session id (kimi always sends `sessionId`); payloads without one fall
-/// back to a stable hash of agent+cwd so a session-less agent still briefs
-/// once per checkout. The key is sanitized to a safe file name.
+/// session id when Kimi supplies one; payloads without one fall back to a
+/// stable hash of agent+cwd so a session-less agent still briefs once per
+/// checkout. The key is sanitized to a safe file name.
 fn briefed_marker_path(
     data_dir: &Path,
     agent: &str,
@@ -192,13 +194,36 @@ fn sanitize_briefed_key(raw: &str) -> String {
         .collect()
 }
 
-/// Best-effort marker write: on failure the worst case is a re-brief on the
-/// next prompt, which is acceptable.
+/// Best-effort marker write with bounded retention: on failure the worst case
+/// is a re-brief on the next prompt, which is acceptable.
 fn mark_briefed(path: &Path) {
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() || fs::write(path, b"").is_err() {
+        return;
     }
-    let _ = fs::write(path, b"");
+
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let mut stale_candidates = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata.is_file().then_some((
+                metadata.modified().ok(),
+                entry.file_name(),
+                entry.path(),
+            ))
+        })
+        .filter(|(_, _, candidate)| candidate != path)
+        .collect::<Vec<_>>();
+    stale_candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    let keep_others = MAX_BRIEFED_MARKERS.saturating_sub(1);
+    for (_, _, stale) in stale_candidates.into_iter().skip(keep_others) {
+        let _ = fs::remove_file(stale);
+    }
 }
 
 fn fresh_session_id(data_dir: &Path, agent: AgentKind) -> String {
@@ -566,8 +591,9 @@ where
     // user-prompt: agents whose SessionStart stdout is discarded (Kimi Code)
     // receive the handoff here instead — kimi injects UserPromptSubmit stdout
     // into the turn verbatim as a `hook_result` user message. The payload
-    // carries the native `sessionId`, so the destructive GET can also link
-    // the managed run to the native session, same as session-start does.
+    // carries the native session id when available, so the destructive GET
+    // can also link the managed run to the native session, same as
+    // session-start does.
     // The installed kimi hook passes the script stem (`user-prompt-submit`)
     // while the legacy shell path posts `user-prompt`; HookEvent::parse
     // canonicalizes both (and the snake/native spellings) to UserPrompt.
@@ -589,13 +615,18 @@ where
         // `&briefing`/`&briefing_budget`, so the server does not recompose
         // the brief per prompt. The marker survives `/clear`, so re-briefing
         // after a context clear is not supported in v1.
-        let briefed_path = briefed_marker_path(
-            &dd,
-            &args.agent,
-            canonical_session_id.as_deref(),
-            policy_cwd.as_deref(),
-        );
-        let handoff_qs = if briefed_path.is_file() {
+        let briefed_path = policy_cwd
+            .as_deref()
+            .filter(|cwd| marker_requests_briefing(cwd))
+            .map(|_| {
+                briefed_marker_path(
+                    &dd,
+                    &args.agent,
+                    canonical_session_id.as_deref(),
+                    policy_cwd.as_deref(),
+                )
+            });
+        let handoff_qs = if briefed_path.as_ref().is_some_and(|path| path.is_file()) {
             policy_cwd
                 .as_deref()
                 .map(|cwd| {
@@ -619,7 +650,9 @@ where
         // the brief-flagged request on every prompt would not deliver
         // anything anyway, and the one lost brief is recovered on the next
         // session.
-        mark_briefed(&briefed_path);
+        if let Some(path) = briefed_path.as_deref() {
+            mark_briefed(path);
+        }
         if let Some(handoff) = handoff {
             writeln!(stdout, "{handoff}")?;
         }
@@ -1552,6 +1585,7 @@ mod tests {
             auth_token: None,
             project_strategy: None,
             check_capture: false,
+            capture_assistant: false,
         }
     }
 
@@ -1816,9 +1850,9 @@ mod tests {
         std::fs::create_dir(&cwd).unwrap();
         write_briefing_marker(&cwd);
         let (base, mut requests) = serve_requests("200 OK", "AMWS-HANDOFF-DELTA").await;
-        // No sessionId in the payload (kimi always sends one; this is the
-        // defensive path): the briefed marker is keyed by a stable hash of
-        // agent+cwd, so a session-less payload still briefs only once.
+        // No session id in the payload: the briefed marker is keyed by a
+        // stable hash of agent+cwd, so a session-less payload still briefs
+        // only once.
         let payload = serde_json::json!({"cwd": cwd, "prompt": "hi"}).to_string();
 
         let mut stdout = Vec::new();
@@ -1854,5 +1888,53 @@ mod tests {
         let second = first_request(&mut requests).await.unwrap();
         assert!(second.starts_with("GET /handoff?"), "{second}");
         assert!(!second.contains("briefing"), "{second}");
+    }
+
+    #[tokio::test]
+    async fn kimi_user_prompt_without_briefing_creates_no_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let cwd = tmp.path().join("repo");
+        std::fs::create_dir(&cwd).unwrap();
+        let (base, mut requests) = serve_requests("404 Not Found", "").await;
+
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(data_dir.clone()),
+            kimi_hook_args("user-prompt-submit", &base),
+            serde_json::json!({
+                "session_id": "session_abc",
+                "cwd": cwd,
+                "prompt": "hi"
+            })
+            .to_string(),
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+        let request = first_request(&mut requests).await.unwrap();
+        assert!(request.starts_with("GET /handoff?"), "{request}");
+        assert!(!request.contains("briefing"), "{request}");
+        assert!(!data_dir.join("briefed").exists());
+    }
+
+    #[test]
+    fn briefed_markers_are_bounded_and_keep_current() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker_dir = tmp.path().join("briefed");
+        let count = MAX_BRIEFED_MARKERS + 20;
+        for index in 0..count {
+            mark_briefed(&marker_dir.join(format!("session-{index:04}")));
+        }
+
+        let retained = std::fs::read_dir(&marker_dir).unwrap().count();
+        assert_eq!(retained, MAX_BRIEFED_MARKERS);
+        assert!(
+            marker_dir
+                .join(format!("session-{:04}", count - 1))
+                .is_file()
+        );
     }
 }

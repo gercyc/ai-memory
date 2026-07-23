@@ -550,11 +550,18 @@ done
 
 # Kimi Code keeps providers/model and hooks in one config.toml under
 # $KIMI_CODE_HOME. Seed the isolated home with the operator's provider
-# settings; install-hooks merges its [[hooks]] entries without rewriting
-# the rest of the file.
+# settings and minimum login state; install-hooks merges its [[hooks]]
+# entries without rewriting the rest of the file. Native sessions, indexes,
+# logs, and telemetry remain isolated.
 if [ -f "$HOME/.kimi-code/config.toml" ]; then
   cp "$HOME/.kimi-code/config.toml" "$KIMI_ACCEPTANCE_HOME/config.toml"
 fi
+for relative in credentials/kimi-code.json oauth/kimi-code device_id; do
+  if [ -f "$HOME/.kimi-code/$relative" ]; then
+    mkdir -p "$KIMI_ACCEPTANCE_HOME/$(dirname "$relative")"
+    cp "$HOME/.kimi-code/$relative" "$KIMI_ACCEPTANCE_HOME/$relative"
+  fi
+done
 
 install_hook() {
   local agent=$1

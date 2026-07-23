@@ -175,10 +175,11 @@ ai-memory install-hooks --agent omp --apply
 ai-memory install-hooks --agent kimi-code --apply
 ```
 
-Refreshing the Kimi Code hooks is mandatory when upgrading from a release
-before managed kimi support: those hooks fetched the handoff at SessionStart,
-whose stdout Kimi Code discards, so pending handoffs were consumed without
-ever reaching the model. Current hooks deliver it at UserPromptSubmit.
+Kimi Code hooks installed as native `ai-memory hook` commands automatically
+pick up the current delivery behavior when the binary is upgraded. A
+script-fallback installation must rerun the Kimi Code `install-hooks` command
+after upgrading so its staged scripts are refreshed. Current hooks deliver
+handoffs at `UserPromptSubmit`; Kimi discards `SessionStart` stdout.
 
 Known Kimi Code adapter limitations: subagent transcripts
 (`agents/<id>/wire.jsonl` other than `main`) are not imported in v1 and are
@@ -188,6 +189,11 @@ is a one-way hash of the working directory, so discovery always reads
 from the SHA-256 of the raw wire.jsonl line, so two byte-identical lines —
 only possible with identical content in the same millisecond, because Kimi
 Code stamps each record with `time` — collapse into a single ledger event.
+The incremental cursor stores both the complete-record byte offset and a
+SHA-256 of that imported prefix. Normal appends resume at the saved offset;
+if Kimi rewrites `wire.jsonl` in place, ai-memory resets to the beginning and
+replays the file, with stable event ids deduplicating records already in the
+workstream.
 Legacy sessions that keep `wire.jsonl` directly in the session directory
 (the pre-`agents/` layout the kimi session-store still reads through its
 stat fallback) are neither discovered nor imported in v1. The native

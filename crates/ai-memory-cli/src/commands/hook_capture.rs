@@ -224,6 +224,16 @@ pub fn marker_query_suffix_without_briefing(cwd: &str, default_strategy: Option<
     marker_query_suffix_impl(cwd, default_strategy, false)
 }
 
+/// Whether the nearest marker explicitly enables the compiled project brief.
+///
+/// Kimi Code uses this before creating its local once-per-session marker so
+/// repositories that did not opt in do not accumulate marker files.
+pub fn marker_requests_briefing(cwd: &str) -> bool {
+    find_marker(cwd)
+        .and_then(|marker| parse_toml_flag(&marker, "inject_on_session_start"))
+        .is_some_and(|value| is_truthy(&value))
+}
+
 fn marker_query_suffix_impl(
     cwd: &str,
     default_strategy: Option<&str>,
@@ -317,6 +327,13 @@ fn parse_toml_flag(file: &Path, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn is_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn repo_root_project(cwd: &str) -> Option<String> {
@@ -926,6 +943,27 @@ drop_subagent_captures = "true"
         .unwrap();
         let qs = marker_query_suffix(tmp.path().to_str().unwrap(), None);
         assert!(!qs.contains("briefing"), "{qs}");
+    }
+
+    #[test]
+    fn marker_requests_briefing_only_for_truthy_opt_in() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker = tmp.path().join(".ai-memory.toml");
+        let cwd = tmp.path().to_str().unwrap();
+
+        assert!(!marker_requests_briefing(cwd));
+        std::fs::write(
+            &marker,
+            "[briefing]\ninject_on_session_start = false\nmax_chars = 6000\n",
+        )
+        .unwrap();
+        assert!(!marker_requests_briefing(cwd));
+        std::fs::write(
+            &marker,
+            "[briefing]\ninject_on_session_start = YeS\nmax_chars = 6000\n",
+        )
+        .unwrap();
+        assert!(marker_requests_briefing(cwd));
     }
 
     #[test]

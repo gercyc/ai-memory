@@ -390,6 +390,7 @@ fn launch_mode(harness: ManagedHarness, args: &[OsString]) -> LaunchMode {
             "provider",
             "acp",
             "web",
+            "server",
             "login",
             "doctor",
             "vis",
@@ -963,7 +964,7 @@ mod tests {
 
     #[test]
     fn kimi_utility_subcommands_are_passed_through() {
-        for utility in ["export", "doctor", "provider", "upgrade"] {
+        for utility in ["export", "doctor", "provider", "upgrade", "server"] {
             let plan = build_launch_plan(
                 ManagedHarness::Kimi,
                 None,

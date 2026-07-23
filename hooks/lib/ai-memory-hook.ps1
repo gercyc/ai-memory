@@ -76,21 +76,27 @@ function Get-AiMemoryTomlFlag {
     return $null
 }
 
+function Test-AiMemoryTruthy {
+    param([string] $Value)
+    if (-not $Value) { return $false }
+    return @("1", "true", "yes", "on") -contains $Value.Trim().ToLowerInvariant()
+}
+
 # Build `&briefing=<v>[&briefing_budget=<v>]` from the `[briefing]` section
 # of the marker walked up from $Cwd. Returns "" when the repo did not opt
 # in. Used by agents that deliver the compiled project brief once per
 # session (kimi-code, via the first user prompt — kimi discards
 # SessionStart hook stdout) so the server does not recompose the brief on
-# every request. Truthiness and the char-budget clamp are server-side.
+# every request. The char-budget clamp is server-side.
 function Get-AiMemoryBriefingQuery {
     param([string] $Cwd)
     if (-not $Cwd) { return "" }
     $marker = Get-AiMemoryMarkerToml -Cwd $Cwd
     if (-not $marker) { return "" }
-    $qs = ""
     $briefing = Get-AiMemoryTomlFlag -File $marker -Key "inject_on_session_start"
+    if (-not (Test-AiMemoryTruthy -Value $briefing)) { return "" }
     $budget = Get-AiMemoryTomlFlag -File $marker -Key "max_chars"
-    if ($briefing) { $qs += "&briefing=$([uri]::EscapeDataString($briefing))" }
+    $qs = "&briefing=$([uri]::EscapeDataString($briefing))"
     if ($budget) { $qs += "&briefing_budget=$([uri]::EscapeDataString($budget))" }
     return $qs
 }
@@ -102,6 +108,18 @@ function Get-AiMemoryBriefedFile {
     param([string] $Key)
     $safe = ($Key -replace '[^A-Za-z0-9._-]', '_')
     return (Join-Path (Join-Path (Get-AiMemoryStateDir) "briefed") $safe)
+}
+
+function Set-AiMemoryBriefed {
+    param([string] $Path)
+    if (-not $Path) { return }
+    $dir = Split-Path $Path -Parent
+    New-Item -ItemType Directory -Force -Path $dir -ErrorAction SilentlyContinue | Out-Null
+    New-Item -ItemType File -Force -Path $Path -ErrorAction SilentlyContinue | Out-Null
+    Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -Skip 512 |
+        Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
 # Resolve the basename of the MAIN git repository root for $Cwd, following the
@@ -290,21 +308,24 @@ function Invoke-AiMemoryHook {
             }
         } catch {
         }
-        # Once-per-session briefing gate, keyed by the native session id
-        # (kimi always sends `sessionId`); without one, a stable hash of
-        # agent+cwd so a session-less payload still briefs only once.
+        # Once-per-session briefing gate. Marker files are created only for
+        # repositories that opt in. Prefer the native session id when Kimi
+        # supplies one; otherwise use a stable hash of agent+cwd.
         $BriefQS = ""
         $BriefFile = $null
         if ($BriefingOncePerSession) {
-            $BriefKey = [string]$NativeSessionId
-            if (-not $BriefKey) {
-                $Sha = [System.Security.Cryptography.SHA256]::Create()
-                $Bytes = $Sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("$Agent`n$Cwd"))
-                $BriefKey = (($Bytes | ForEach-Object { $_.ToString("x2") }) -join "")
-            }
-            $BriefFile = Get-AiMemoryBriefedFile -Key $BriefKey
-            if (-not (Test-Path $BriefFile -PathType Leaf)) {
-                $BriefQS = Get-AiMemoryBriefingQuery -Cwd $Cwd
+            $BriefQS = Get-AiMemoryBriefingQuery -Cwd $Cwd
+            if ($BriefQS) {
+                $BriefKey = [string]$NativeSessionId
+                if (-not $BriefKey) {
+                    $Sha = [System.Security.Cryptography.SHA256]::Create()
+                    $Bytes = $Sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("$Agent`n$Cwd"))
+                    $BriefKey = (($Bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+                }
+                $BriefFile = Get-AiMemoryBriefedFile -Key $BriefKey
+                if (Test-Path $BriefFile -PathType Leaf) {
+                    $BriefQS = ""
+                }
             }
         }
         try {
@@ -335,8 +356,7 @@ function Invoke-AiMemoryHook {
         # brief-flagged request on every prompt would deliver nothing
         # anyway, and the one lost brief returns on the next session).
         if ($BriefFile) {
-            New-Item -ItemType Directory -Force -Path (Split-Path $BriefFile -Parent) -ErrorAction SilentlyContinue | Out-Null
-            New-Item -ItemType File -Force -Path $BriefFile -ErrorAction SilentlyContinue | Out-Null
+            Set-AiMemoryBriefed -Path $BriefFile
         }
     } elseif ($AntigravityPreInvocationOutput) {
         [Console]::Out.Write("{}")

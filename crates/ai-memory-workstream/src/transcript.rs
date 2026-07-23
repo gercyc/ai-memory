@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{BufRead as _, BufReader, Seek as _, SeekFrom};
+use std::io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -45,6 +45,11 @@ pub struct ExportedTranscript {
 struct FileCursor {
     path: String,
     offset: u64,
+    /// Hash of every committed byte through `offset`. Kimi Code can rewrite
+    /// its journal in place, so its adapter validates this prefix before
+    /// trusting the byte offset. Other JSONL adapters remain offset-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefix_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -199,7 +204,23 @@ fn export_jsonl(
     let mut file = File::open(path)
         .with_context(|| format!("opening native transcript {}", path.display()))?;
     let len = file.metadata()?.len();
-    let start = cursor.map_or(0, |cursor| cursor.offset.min(len));
+    let (start, mut kimi_prefix_hasher) = if harness == ManagedHarness::Kimi {
+        let validated = if let Some(cursor) = cursor.as_ref().filter(|cursor| cursor.offset <= len)
+            && let Some(expected) = cursor.prefix_sha256.as_deref()
+            && let Some(hasher) = hash_file_prefix(&mut file, cursor.offset)?
+            && format!("{:x}", hasher.clone().finalize()) == expected
+        {
+            Some((cursor.offset, hasher))
+        } else {
+            None
+        };
+        validated.unwrap_or_else(|| (0, Sha256::new()))
+    } else {
+        (
+            cursor.map_or(0, |cursor| cursor.offset.min(len)),
+            Sha256::new(),
+        )
+    };
     file.seek(SeekFrom::Start(start))?;
     let mut reader = BufReader::new(file);
     let mut offset = start;
@@ -216,6 +237,9 @@ fn export_jsonl(
         offset += read as u64;
         if !line.ends_with(b"\n") {
             break;
+        }
+        if harness == ManagedHarness::Kimi {
+            kimi_prefix_hasher.update(&line);
         }
         committed_offset = offset;
         let value: Value = match serde_json::from_slice(&line) {
@@ -285,10 +309,29 @@ fn export_jsonl(
         source_cursor: Some(serde_json::to_string(&FileCursor {
             path: path.to_string_lossy().into_owned(),
             offset: committed_offset,
+            prefix_sha256: (harness == ManagedHarness::Kimi)
+                .then(|| format!("{:x}", kimi_prefix_hasher.finalize())),
         })?),
         events,
         losses: deduplicate_losses(losses),
     })
+}
+
+fn hash_file_prefix(file: &mut File, len: u64) -> Result<Option<Sha256>> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = Sha256::new();
+    let mut remaining = len;
+    let mut buffer = [0_u8; 16 * 1024];
+    while remaining > 0 {
+        let limit = remaining.min(buffer.len() as u64) as usize;
+        let read = file.read(&mut buffer[..limit])?;
+        if read == 0 {
+            return Ok(None);
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(Some(hasher))
 }
 
 fn parse_claude(
@@ -543,12 +586,12 @@ fn parse_pi_family(
 }
 
 /// Kimi Code wire journal (`agents/main/wire.jsonl`): flat records
-/// `{type, time?, ...payload}`. Only `context.append_message` and
-/// `context.apply_compaction` project visible conversation — `turn.prompt`,
-/// `turn.steer` and `context.append_loop_event` duplicate the same messages,
-/// and records like `config.update`/`llm.request` carry private harness data
-/// (system prompts, request bodies) that must never reach the ledger. Unknown
-/// record types are ignored so newer kimi versions stay forward-compatible.
+/// `{type, time?, ...payload}`. `context.append_message` stores user messages
+/// and legacy/imported conversation records; native assistant output and tool
+/// exchanges are recorded as `context.append_loop_event`. Records like
+/// `config.update`/`llm.request` carry private harness data (system prompts,
+/// request bodies) that must never reach the ledger. Unknown record types are
+/// ignored so newer Kimi versions stay forward-compatible.
 fn parse_kimi(
     value: &Value,
     session: &str,
@@ -620,12 +663,14 @@ fn parse_kimi(
                         .and_then(Value::as_array)
                         .map_or(&[][..], Vec::as_slice);
                     for (index, call) in tool_calls.iter().enumerate() {
-                        let name = first_string(call, &["name"]).unwrap_or("tool");
+                        let function = call.get("function").unwrap_or(call);
+                        let name = first_string(function, &["name"]).unwrap_or("tool");
                         // `arguments` is a JSON string; re-serialize it
                         // compact when it parses, mirroring parse_codex's
                         // `"{name}: {body}"` tool-call shape.
                         let arguments = call
                             .get("arguments")
+                            .or_else(|| function.get("arguments"))
                             .and_then(Value::as_str)
                             .map(|raw| match serde_json::from_str::<Value>(raw) {
                                 Ok(parsed) => compact_json(&parsed),
@@ -660,6 +705,84 @@ fn parse_kimi(
                         &body,
                         occurred_at,
                         json!({}),
+                    );
+                }
+                _ => {}
+            }
+        }
+        "context.append_loop_event" => {
+            let event = value.get("event").unwrap_or(&Value::Null);
+            match event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "content.part" => {
+                    let part = event.get("part").unwrap_or(&Value::Null);
+                    match part.get("type").and_then(Value::as_str).unwrap_or_default() {
+                        "text" => {
+                            if let Some(text) = first_string(part, &["text", "content"]) {
+                                push_event(
+                                    events,
+                                    AgentKind::KimiCode,
+                                    session,
+                                    record_id,
+                                    0,
+                                    WorkstreamEventKind::Message,
+                                    Some("assistant"),
+                                    text,
+                                    occurred_at,
+                                    json!({}),
+                                );
+                            }
+                        }
+                        "think" | "thinking" => {
+                            losses.push("Kimi hidden reasoning was intentionally excluded".into());
+                        }
+                        _ => {
+                            losses.push(
+                                "Kimi non-text content parts were intentionally excluded".into(),
+                            );
+                        }
+                    }
+                }
+                "tool.call" => {
+                    let name = first_string(event, &["name"]).unwrap_or("tool");
+                    let arguments = event.get("args").map(compact_json).unwrap_or_default();
+                    push_event(
+                        events,
+                        AgentKind::KimiCode,
+                        session,
+                        record_id,
+                        0,
+                        WorkstreamEventKind::ToolCall,
+                        Some("assistant"),
+                        &format!("{name}: {arguments}"),
+                        occurred_at,
+                        json!({
+                            "tool": name,
+                            "tool_call_id": event.get("toolCallId").and_then(Value::as_str)
+                        }),
+                    );
+                }
+                "tool.result" => {
+                    let result = event.get("result").unwrap_or(&Value::Null);
+                    let texts =
+                        kimi_content_parts(result.get("output").unwrap_or(&Value::Null), losses);
+                    push_event(
+                        events,
+                        AgentKind::KimiCode,
+                        session,
+                        record_id,
+                        0,
+                        WorkstreamEventKind::ToolResult,
+                        Some("tool"),
+                        &texts.parts.join("\n"),
+                        occurred_at,
+                        json!({
+                            "tool_call_id": event.get("toolCallId").and_then(Value::as_str),
+                            "is_error": result.get("isError").and_then(Value::as_bool)
+                        }),
                     );
                 }
                 _ => {}
@@ -726,7 +849,10 @@ struct KimiTextParts {
 /// Collect the visible text of a kimi message's content parts in order,
 /// annotating parts that cannot be imported (hidden reasoning, media).
 fn kimi_text_parts(message: &Value, losses: &mut Vec<String>) -> KimiTextParts {
-    let content = message.get("content").unwrap_or(&Value::Null);
+    kimi_content_parts(message.get("content").unwrap_or(&Value::Null), losses)
+}
+
+fn kimi_content_parts(content: &Value, losses: &mut Vec<String>) -> KimiTextParts {
     let parts: Vec<&Value> = content
         .as_array()
         .map_or_else(|| vec![content], |items| items.iter().collect());
@@ -2191,10 +2317,14 @@ mod tests {
             json!({"type":"context.append_message","message":{"role":"user","origin":{"kind":"hook_result","event":"UserPromptSubmit"},"content":[{"type":"text","text":"injected handoff delta"}]}}),
             json!({"type":"context.append_message","message":{"role":"user","origin":{"kind":"injection","variant":"todo"},"content":[{"type":"text","text":"injected todo"}]}}),
             json!({"type":"context.append_message","message":{"role":"system","content":[{"type":"text","text":"private system prompt"}]}}),
-            json!({"type":"context.append_message","message":{"role":"assistant","content":[{"type":"think","think":"private reasoning"},{"type":"text","text":"visible answer"}],"toolCalls":[{"type":"function","id":"call_1","name":"bash","arguments":"{\"cmd\": \"ls\"}"}]}}),
+            json!({"type":"context.append_message","message":{"role":"assistant","content":[{"type":"think","think":"private reasoning"},{"type":"text","text":"visible answer"}],"toolCalls":[{"type":"function","id":"call_1","function":{"name":"bash","arguments":"{\"cmd\": \"ls\"}"}}]}}),
             json!({"type":"context.append_message","message":{"role":"tool","toolCallId":"call_1","content":[{"type":"text","text":"result ok"}]}}),
             json!({"type":"context.append_message","message":{"role":"assistant","partial":true,"content":[{"type":"text","text":"stream fragment"}]}}),
             json!({"type":"context.apply_compaction","summary":"compact summary","compactedCount":4}),
+            json!({"type":"context.append_loop_event","event":{"type":"content.part","uuid":"part-think","stepUuid":"step-1","part":{"type":"think","think":"private loop reasoning"}}}),
+            json!({"type":"context.append_loop_event","event":{"type":"content.part","uuid":"part-text","stepUuid":"step-1","part":{"type":"text","text":"loop visible answer"}}}),
+            json!({"type":"context.append_loop_event","event":{"type":"tool.call","uuid":"call-2","stepUuid":"step-1","toolCallId":"call_2","name":"Read","args":{"path":"README.md"}}}),
+            json!({"type":"context.append_loop_event","event":{"type":"tool.result","parentUuid":"call-2","toolCallId":"call_2","result":{"output":[{"type":"text","text":"loop result ok"}],"isError":false}}}),
             json!({"type":"config.update","systemPrompt":"never copied"}),
             json!({"type":"turn.prompt","text":"duplicate projection"}),
         ];
@@ -2215,6 +2345,9 @@ mod tests {
                 WorkstreamEventKind::ToolCall,
                 WorkstreamEventKind::ToolResult,
                 WorkstreamEventKind::Compaction,
+                WorkstreamEventKind::Message,
+                WorkstreamEventKind::ToolCall,
+                WorkstreamEventKind::ToolResult,
             ]
         );
         assert_eq!(export.events[0].content, "hello kimi");
@@ -2228,6 +2361,12 @@ mod tests {
         assert_eq!(export.events[2].metadata["tool"], "bash");
         assert_eq!(export.events[3].role.as_deref(), Some("tool"));
         assert_eq!(export.events[4].content, "compact summary");
+        assert_eq!(export.events[5].content, "loop visible answer");
+        assert_eq!(export.events[6].content, "Read: {\"path\":\"README.md\"}");
+        assert_eq!(export.events[6].metadata["tool"], "Read");
+        assert_eq!(export.events[6].metadata["tool_call_id"], "call_2");
+        assert_eq!(export.events[7].content, "loop result ok");
+        assert_eq!(export.events[7].metadata["is_error"], false);
         assert!(
             export
                 .events
@@ -2281,6 +2420,7 @@ mod tests {
         let cursor: FileCursor =
             serde_json::from_str(initial.source_cursor.as_deref().unwrap()).unwrap();
         assert_eq!(cursor.offset, first.len() as u64 + 1);
+        assert!(cursor.prefix_sha256.is_some());
 
         fs::write(&wire, format!("{first}\n{second}\n")).unwrap();
         let incremental = export_jsonl(
@@ -2292,6 +2432,64 @@ mod tests {
         .unwrap();
         assert_eq!(incremental.events.len(), 1);
         assert_eq!(incremental.events[0].content, "two");
+    }
+
+    #[test]
+    fn kimi_export_resets_cursor_after_an_in_place_journal_rewrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let wire = temp
+            .path()
+            .join("store/bucket/session_x/agents/main/wire.jsonl");
+        fs::create_dir_all(wire.parent().unwrap()).unwrap();
+        let message = |role: &str, text: &str| {
+            json!({
+                "type": "context.append_message",
+                "message": {
+                    "role": role,
+                    "content": [{"type": "text", "text": text}],
+                },
+            })
+            .to_string()
+        };
+        let first = message("user", "one");
+        let second = message("assistant", "two");
+        fs::write(&wire, format!("{first}\n{second}\n")).unwrap();
+
+        let initial = export_jsonl(ManagedHarness::Kimi, &wire, "session_x", None).unwrap();
+        let initial_ids: Vec<_> = initial
+            .events
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect();
+        let inserted = message(
+            "user",
+            "a rewritten prefix whose different byte length invalidates the old offset",
+        );
+        let third = message("assistant", "three");
+        fs::write(&wire, format!("{inserted}\n{first}\n{second}\n{third}\n")).unwrap();
+
+        let rewritten = export_jsonl(
+            ManagedHarness::Kimi,
+            &wire,
+            "session_x",
+            initial.source_cursor.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten
+                .events
+                .iter()
+                .map(|event| event.content.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "a rewritten prefix whose different byte length invalidates the old offset",
+                "one",
+                "two",
+                "three",
+            ]
+        );
+        assert_eq!(rewritten.events[1].event_id, initial_ids[0]);
+        assert_eq!(rewritten.events[2].event_id, initial_ids[1]);
     }
 
     #[test]

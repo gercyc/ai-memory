@@ -44,14 +44,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model. `UserPromptSubmit` stdout is injected as a user message before the
   turn. The native `ai-memory hook` path now also accepts the
   `user-prompt-submit` event token alongside `user-prompt` for kimi handoff
-  delivery. Re-run `ai-memory install-hooks --agent kimi-code --apply` after
-  upgrading.
+  delivery. Existing native hook commands pick up the correction when the
+  binary is upgraded; script-fallback installations must re-run
+  `ai-memory install-hooks --agent kimi-code --apply` to refresh their staged
+  scripts.
 - The `[briefing]` compiled project brief is now gated to once per session
   for Kimi Code: it rides the first user prompt (kimi discards SessionStart
   hook stdout, so session-start delivery is impossible) and later prompts
   keep fetching the handoff without the briefing params, so the server no
-  longer recomposes the brief on every prompt. Re-briefing after `/clear`
-  is not supported in v1.
+  longer recomposes the brief on every prompt. This also works for managed
+  handoffs, creates local markers only for opted-in repositories, and retains
+  at most 512 markers. Re-briefing after `/clear` is not supported in v1.
+- Kimi Code managed transcript cursors now validate the imported byte prefix
+  before resuming. When Kimi rewrites `wire.jsonl` in place, ai-memory safely
+  replays the journal with stable event IDs instead of seeking into a changed
+  record or skipping new events.
+- Kimi Code managed transcript extraction now imports native
+  `context.append_loop_event` assistant text, tool calls, and tool results.
+  Current Kimi journals store model output in those records rather than
+  re-appending it as a completed assistant message.
+- `ai-memory run kimi server ...` now passes through Kimi Code's deprecated
+  but still functional `server` utility command instead of treating it as an
+  interactive session launch.
 
 ## [1.17.3] - 2026-07-22
 
