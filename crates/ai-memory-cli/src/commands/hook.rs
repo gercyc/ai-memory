@@ -492,6 +492,37 @@ where
         }
     }
 
+    // user-prompt: agents whose SessionStart stdout is discarded (Kimi Code)
+    // receive the handoff here instead — kimi injects UserPromptSubmit stdout
+    // into the turn verbatim as a `hook_result` user message. The payload
+    // carries the native `sessionId`, so the destructive GET can also link
+    // the managed run to the native session, same as session-start does.
+    if args.event == "user-prompt"
+        && AgentKind::from_wire(&args.agent).user_prompt_injects_handoff()
+    {
+        let client = build_client();
+        let bearer = hook_spool::resolve_bearer(&client, &dd, args.auth_token.as_deref()).await;
+        let native_session_qs = canonical_session_id
+            .as_deref()
+            .map_or_else(String::new, |session_id| {
+                format!("&session_id={}", url_encode(session_id))
+            });
+        let handoff_url = format!(
+            "{base}/handoff?agent={}{qs}{managed_qs}{native_session_qs}",
+            args.agent
+        );
+        if let Some(handoff) =
+            get_handoff(&client, &handoff_url, bearer.as_deref(), handoff_timeout()).await
+        {
+            writeln!(stdout, "{handoff}")?;
+        }
+        // Never print the usual `{}` here: kimi injects any non-empty stdout
+        // into the turn verbatim, so an envelope would become user-visible
+        // text. Empty handoff or any fetch error means print nothing at all
+        // (kimi ignores empty stdout; warnings go to stderr).
+        return Ok(());
+    }
+
     // Boundary drain trigger: enqueue first, then ask a detached native drainer
     // to flush the shared spool. `session-end` remains the primary close path,
     // but `stop` and `pre-compact` also trigger the helper so delivery does not
@@ -1398,6 +1429,163 @@ mod tests {
             )
             .unwrap();
             assert_eq!(body["session_id"], value, "{key}");
+        }
+    }
+
+    fn kimi_hook_args(event: &str, server_url: &str) -> HookArgs {
+        HookArgs {
+            event: event.into(),
+            agent: "kimi-code".into(),
+            server_url: server_url.into(),
+            auth_token: None,
+            project_strategy: None,
+            check_capture: false,
+        }
+    }
+
+    /// Recording HTTP stub: replies to every request with `status`/`body` and
+    /// streams each request head back so tests can assert which endpoints the
+    /// hook touched (session-start also drains the spool, so POSTs to `/hook`
+    /// are legitimate traffic here — only `GET /handoff` is interesting).
+    async fn serve_requests(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0_u8; 8192];
+                let read = stream.read(&mut buf).await.unwrap_or(0);
+                let _ = tx.send(String::from_utf8_lossy(&buf[..read]).into_owned());
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    /// Wait briefly for the first recorded request (if any).
+    async fn first_request(
+        requests: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> Option<String> {
+        tokio::time::timeout(Duration::from_millis(500), requests.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    #[tokio::test]
+    async fn kimi_user_prompt_prints_the_handoff_body_verbatim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (base, mut requests) = serve_requests("200 OK", "AMWS-HANDOFF-DELTA").await;
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(tmp.path().to_path_buf()),
+            kimi_hook_args("user-prompt", &base),
+            serde_json::json!({
+                "sessionId": "session_abc",
+                "cwd": tmp.path(),
+                "prompt": "hello"
+            })
+            .to_string(),
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+        // Kimi injects UserPromptSubmit stdout verbatim into the turn, so the
+        // body must be the bare handoff — never a JSON envelope.
+        assert_eq!(stdout, b"AMWS-HANDOFF-DELTA\n");
+        let request = first_request(&mut requests).await.unwrap();
+        assert!(request.starts_with("GET /handoff?"), "{request}");
+        assert!(request.contains("agent=kimi-code"), "{request}");
+        // The native session id rides along so the destructive fetch can link
+        // the managed run to the kimi session.
+        assert!(request.contains("session_id=session_abc"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn kimi_user_prompt_prints_nothing_when_no_handoff_is_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (base, mut requests) = serve_requests("404 Not Found", "").await;
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(tmp.path().to_path_buf()),
+            kimi_hook_args("user-prompt", &base),
+            serde_json::json!({"sessionId": "session_abc", "cwd": tmp.path(), "prompt": "hi"})
+                .to_string(),
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+        // The hook still attempted the fetch (a miss is indistinguishable
+        // from an empty handoff server-side)...
+        let request = first_request(&mut requests).await.unwrap();
+        assert!(request.starts_with("GET /handoff?"), "{request}");
+        // ...but stdout stays empty: kimi injects nothing, and a `{}`
+        // envelope would show up as literal user-visible text.
+        assert_eq!(stdout, b"");
+    }
+
+    #[tokio::test]
+    async fn kimi_session_start_never_fetches_the_handoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A handoff IS pending; kimi's SessionStart stdout is discarded, so
+        // the hook must not consume it here (it is delivered on user-prompt).
+        let (base, mut requests) = serve_requests("200 OK", "AMWS-HANDOFF-DELTA").await;
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(tmp.path().to_path_buf()),
+            kimi_hook_args("session-start", &base),
+            serde_json::json!({"sessionId": "session_abc", "cwd": tmp.path()}).to_string(),
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stdout, b"{}\n");
+        // The session-start backlog drain may POST the spooled event, but no
+        // request may touch /handoff.
+        while let Some(request) = first_request(&mut requests).await {
+            assert!(!request.starts_with("GET /handoff"), "{request}");
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_user_prompt_does_not_fetch_the_handoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (base, mut requests) = serve_requests("200 OK", "AMWS-HANDOFF-DELTA").await;
+        let mut args = kimi_hook_args("user-prompt", &base);
+        args.agent = "claude-code".into();
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(tmp.path().to_path_buf()),
+            args,
+            serde_json::json!({"session_id": "claude-session", "cwd": tmp.path()}).to_string(),
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+        // Claude keeps receiving the handoff on session-start; user-prompt
+        // output stays the plain empty object and no fetch happens.
+        assert_eq!(stdout, b"{}\n");
+        while let Some(request) = first_request(&mut requests).await {
+            assert!(!request.starts_with("GET /handoff"), "{request}");
         }
     }
 }
