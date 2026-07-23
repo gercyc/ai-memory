@@ -208,6 +208,27 @@ pub fn url_encode(s: &str) -> String {
 /// (§3.3). repo-root is resolved here, host-side, because a containerized
 /// server cannot see this checkout.
 pub fn marker_query_suffix(cwd: &str, default_strategy: Option<&str>) -> String {
+    marker_query_suffix_impl(cwd, default_strategy, true)
+}
+
+/// [`marker_query_suffix`] without the `[briefing]` pair
+/// (`&briefing=…&briefing_budget=…`).
+///
+/// Used by the kimi user-prompt handoff fetch: kimi discards SessionStart
+/// hook stdout, so the compiled project brief is delivered on the FIRST user
+/// prompt of a session (parity with Claude's once-per-SessionStart brief) and
+/// later prompts re-fetch the handoff — kept on every prompt because it is
+/// cheap and self-limiting (empty body when nothing is pending) — without the
+/// briefing params, so the server does not recompose the brief per prompt.
+pub fn marker_query_suffix_without_briefing(cwd: &str, default_strategy: Option<&str>) -> String {
+    marker_query_suffix_impl(cwd, default_strategy, false)
+}
+
+fn marker_query_suffix_impl(
+    cwd: &str,
+    default_strategy: Option<&str>,
+    include_briefing: bool,
+) -> String {
     let mut qs = format!("&cwd={}", url_encode(cwd));
     let (mut workspace, mut project, mut strategy, mut drop_subagent, mut default_global) =
         (None, None, None, None, None);
@@ -256,12 +277,16 @@ pub fn marker_query_suffix(cwd: &str, default_strategy: Option<&str>) -> String 
     // Per-repo session-start brief opt-in: forwarded on every request for
     // simplicity (the capture path ignores it); only the `/handoff` GET at
     // session start acts on it. Truthiness and the char-budget clamp are
-    // decided server-side.
-    if let Some(val) = briefing.filter(|v| !v.is_empty()) {
-        qs.push_str(&format!("&briefing={}", url_encode(&val)));
-    }
-    if let Some(val) = briefing_budget.filter(|v| !v.is_empty()) {
-        qs.push_str(&format!("&briefing_budget={}", url_encode(&val)));
+    // decided server-side. Callers that deliver the brief once per session
+    // (the kimi user-prompt path) pass `include_briefing = false` after the
+    // first delivery so the server stops recomposing the brief per request.
+    if include_briefing {
+        if let Some(val) = briefing.filter(|v| !v.is_empty()) {
+            qs.push_str(&format!("&briefing={}", url_encode(&val)));
+        }
+        if let Some(val) = briefing_budget.filter(|v| !v.is_empty()) {
+            qs.push_str(&format!("&briefing_budget={}", url_encode(&val)));
+        }
     }
     qs
 }

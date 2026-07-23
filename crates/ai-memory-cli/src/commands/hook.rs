@@ -23,9 +23,11 @@ use ai_memory_llm::OidcToken;
 
 use crate::cli::HookArgs;
 
+use sha2::{Digest as _, Sha256};
+
 use super::hook_capture::{
     build_client, canonical_context, capture_policy, extract_cwd, get_handoff, marker_query_suffix,
-    resolve_cwd_with_fallbacks, url_encode,
+    marker_query_suffix_without_briefing, resolve_cwd_with_fallbacks, url_encode,
 };
 use super::hook_drain_process;
 use super::hook_spool;
@@ -149,6 +151,54 @@ fn store_session_id(data_dir: &Path, agent: AgentKind, session_id: &str) {
 
 fn clear_session_id(data_dir: &Path, agent: AgentKind) {
     let _ = fs::remove_file(session_id_state_path(data_dir, agent));
+}
+
+/// `<data_dir>/briefed/<key>` — records that the compiled project brief
+/// (`[briefing] inject_on_session_start`) was already delivered for this
+/// session by the user-prompt handoff path. kimi-code discards SessionStart
+/// hook stdout, so the brief rides the FIRST user prompt of the session
+/// (parity with Claude's once-per-SessionStart brief); the marker keeps
+/// later prompts from re-requesting it. Keyed by the payload's canonical
+/// session id (kimi always sends `sessionId`); payloads without one fall
+/// back to a stable hash of agent+cwd so a session-less agent still briefs
+/// once per checkout. The key is sanitized to a safe file name.
+fn briefed_marker_path(
+    data_dir: &Path,
+    agent: &str,
+    session_id: Option<&str>,
+    cwd: Option<&str>,
+) -> PathBuf {
+    let key = session_id.map_or_else(
+        || {
+            format!(
+                "{:x}",
+                Sha256::digest(format!("{agent}\n{}", cwd.unwrap_or_default()).as_bytes())
+            )
+        },
+        sanitize_briefed_key,
+    );
+    data_dir.join("briefed").join(key)
+}
+
+fn sanitize_briefed_key(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Best-effort marker write: on failure the worst case is a re-brief on the
+/// next prompt, which is acceptable.
+fn mark_briefed(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, b"");
 }
 
 fn fresh_session_id(data_dir: &Path, agent: AgentKind) -> String {
@@ -510,13 +560,46 @@ where
             .map_or_else(String::new, |session_id| {
                 format!("&session_id={}", url_encode(session_id))
             });
+        // Gate the `[briefing]` params to the FIRST user prompt of the
+        // session: kimi has no working SessionStart injection, so the brief
+        // is delivered here exactly once (parity with Claude); afterwards
+        // the handoff fetch continues on every prompt — it is cheap and
+        // self-limiting (empty body when nothing is pending) — but without
+        // `&briefing`/`&briefing_budget`, so the server does not recompose
+        // the brief per prompt. The marker survives `/clear`, so re-briefing
+        // after a context clear is not supported in v1.
+        let briefed_path = briefed_marker_path(
+            &dd,
+            &args.agent,
+            canonical_session_id.as_deref(),
+            policy_cwd.as_deref(),
+        );
+        let handoff_qs = if briefed_path.is_file() {
+            policy_cwd
+                .as_deref()
+                .map(|cwd| {
+                    marker_query_suffix_without_briefing(
+                        cwd,
+                        args.project_strategy.and_then(|s| s.baked()),
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            qs.clone()
+        };
         let handoff_url = format!(
-            "{base}/handoff?agent={}{qs}{managed_qs}{native_session_qs}",
+            "{base}/handoff?agent={}{handoff_qs}{managed_qs}{native_session_qs}",
             args.agent
         );
-        if let Some(handoff) =
-            get_handoff(&client, &handoff_url, bearer.as_deref(), handoff_timeout()).await
-        {
+        let handoff =
+            get_handoff(&client, &handoff_url, bearer.as_deref(), handoff_timeout()).await;
+        // Mark the session as briefed only AFTER the GET completed — success
+        // OR error. Fail-open on purpose: with the server down, repeating
+        // the brief-flagged request on every prompt would not deliver
+        // anything anyway, and the one lost brief is recovered on the next
+        // session.
+        mark_briefed(&briefed_path);
+        if let Some(handoff) = handoff {
             writeln!(stdout, "{handoff}")?;
         }
         // Never print the usual `{}` here: kimi injects any non-empty stdout
@@ -1631,5 +1714,119 @@ mod tests {
         while let Some(request) = first_request(&mut requests).await {
             assert!(!request.starts_with("GET /handoff"), "{request}");
         }
+    }
+
+    fn write_briefing_marker(dir: &Path) {
+        std::fs::write(
+            dir.join(".ai-memory.toml"),
+            "[briefing]\ninject_on_session_start = true\nmax_chars = 6000\n",
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn kimi_user_prompt_briefing_only_on_first_prompt_of_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let cwd = tmp.path().join("repo");
+        std::fs::create_dir(&cwd).unwrap();
+        write_briefing_marker(&cwd);
+        let (base, mut requests) = serve_requests("200 OK", "AMWS-HANDOFF-DELTA").await;
+        let payload = serde_json::json!({
+            "sessionId": "session_abc",
+            "cwd": cwd,
+            "prompt": "hi"
+        })
+        .to_string();
+
+        // First prompt of the session: the briefing params ride along so the
+        // server appends the compiled project brief (kimi cannot receive it
+        // on SessionStart — that hook's stdout is discarded).
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(data_dir.clone()),
+            kimi_hook_args("user-prompt-submit", &base),
+            payload.clone(),
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stdout, b"AMWS-HANDOFF-DELTA\n");
+        let first = first_request(&mut requests).await.unwrap();
+        assert!(first.starts_with("GET /handoff?"), "{first}");
+        assert!(first.contains("&briefing=true"), "{first}");
+        assert!(first.contains("&briefing_budget=6000"), "{first}");
+        // ...and the session is marked as briefed.
+        assert!(data_dir.join("briefed").join("session_abc").is_file());
+
+        // Second prompt: the handoff is still fetched and printed (cheap and
+        // self-limiting), but the briefing params are gone so the server
+        // does not recompose the brief on every prompt.
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(data_dir.clone()),
+            kimi_hook_args("user-prompt-submit", &base),
+            payload,
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stdout, b"AMWS-HANDOFF-DELTA\n");
+        let second = first_request(&mut requests).await.unwrap();
+        assert!(second.starts_with("GET /handoff?"), "{second}");
+        assert!(second.contains("agent=kimi-code"), "{second}");
+        assert!(second.contains("session_id=session_abc"), "{second}");
+        assert!(second.contains("&cwd="), "{second}");
+        assert!(!second.contains("briefing"), "{second}");
+    }
+
+    #[tokio::test]
+    async fn kimi_user_prompt_briefing_fallback_key_hashes_agent_and_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let cwd = tmp.path().join("repo");
+        std::fs::create_dir(&cwd).unwrap();
+        write_briefing_marker(&cwd);
+        let (base, mut requests) = serve_requests("200 OK", "AMWS-HANDOFF-DELTA").await;
+        // No sessionId in the payload (kimi always sends one; this is the
+        // defensive path): the briefed marker is keyed by a stable hash of
+        // agent+cwd, so a session-less payload still briefs only once.
+        let payload = serde_json::json!({"cwd": cwd, "prompt": "hi"}).to_string();
+
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(data_dir.clone()),
+            kimi_hook_args("user-prompt", &base),
+            payload.clone(),
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stdout, b"AMWS-HANDOFF-DELTA\n");
+        let first = first_request(&mut requests).await.unwrap();
+        assert!(first.contains("&briefing=true"), "{first}");
+        let expected_key = format!(
+            "{:x}",
+            Sha256::digest(format!("kimi-code\n{}", cwd.to_str().unwrap()).as_bytes())
+        );
+        assert!(data_dir.join("briefed").join(expected_key).is_file());
+
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(data_dir.clone()),
+            kimi_hook_args("user-prompt", &base),
+            payload,
+            &mut stdout,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stdout, b"AMWS-HANDOFF-DELTA\n");
+        let second = first_request(&mut requests).await.unwrap();
+        assert!(second.starts_with("GET /handoff?"), "{second}");
+        assert!(!second.contains("briefing"), "{second}");
     }
 }
