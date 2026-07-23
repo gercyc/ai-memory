@@ -111,10 +111,10 @@ the CLI to render hook commands for the native Windows agent:
   use native single command strings matching their hook schema. The wrapper
   renders those `.ps1` fallback commands with PowerShell `-EncodedCommand` so a
   hook runner cannot expand their `$env:` setup before the inner PowerShell
-  process receives it. Those commands force text input/output and suppress
-  progress records so nested PowerShell runners do not emit `CLIXML` hook
-  stderr. PowerShell/Git Bash script bundles are compatibility fallbacks and do
-  not enforce capture-policy v1.
+  process receives it. Those commands force text output and suppress progress
+  records so nested PowerShell runners do not emit `CLIXML` hook stderr.
+  PowerShell/Git Bash script bundles are compatibility fallbacks and do not
+  enforce capture-policy v1.
 
 After upgrading the wrapper/image, rerun `install-hooks --agent <agent> --apply`
 for each native Windows agent so existing hook entries receive the current

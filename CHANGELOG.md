@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Code's `--yolo`, and kimi joins the automatic bare-run harness pool.
 
 ### Fixed
-- Windows PowerShell fallback hooks now force text input/output and silence
+- Windows PowerShell fallback hooks now force text output and silence
   non-interactive progress records. This prevents nested PowerShell runners
   such as Antigravity CLI from reporting serialized `CLIXML` progress on every
   hook while preserving the hook's JSON stdout. Existing script-fallback

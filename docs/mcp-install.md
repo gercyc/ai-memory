@@ -415,8 +415,8 @@ The rendered hooks config looks like:
 - Native Windows Docker-wrapper installs render hook entries as
   `powershell.exe ... -EncodedCommand <payload>` so Antigravity's outer command
   runner cannot expand the inner `$env:` setup. The child also forces text
-  input/output and disables progress so PowerShell does not serialize progress
-  records as `CLIXML` hook stderr. Rerun
+  output and disables progress so PowerShell does not serialize progress records
+  as `CLIXML` hook stderr. Rerun
   `install-hooks --agent antigravity-cli --apply` after upgrading to refresh
   existing entries.
 - The `PreInvocation` event fires before each model call (not just at

@@ -1025,8 +1025,9 @@ fn hook_command(
         }
         HookCommandPlatform::Windows => {
             // Hook runners launch this child with redirected streams. Force
-            // text transport and suppress non-interactive progress so Windows
-            // PowerShell does not serialize progress records as CLIXML.
+            // text output and suppress non-interactive progress so Windows
+            // PowerShell does not serialize progress records as CLIXML. Leave
+            // input formatting at its default: the hook reads raw Console.In.
             let mut setup = format!(
                 "$ProgressPreference='SilentlyContinue'; $env:AI_MEMORY_HOOK_URL={}",
                 powershell_quote(server_url)
@@ -1046,7 +1047,7 @@ fn hook_command(
             let program = format!("{setup}; & {}", powershell_quote(&script.to_string_lossy()));
             let encoded = powershell_encoded_command(&program);
             format!(
-                "powershell.exe -NoLogo -NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand {encoded}"
+                "powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand {encoded}"
             )
         }
         HookCommandPlatform::WindowsBash => {
@@ -2150,7 +2151,7 @@ check(activeKeep.disposition === "keep" && activeKeep.protocol?.version === 1 &&
             .and_then(|s| s.as_str())
             .unwrap();
         assert!(cmd.starts_with(
-            "powershell.exe -NoLogo -NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand "
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand "
         ));
         assert!(
             !cmd.contains("$env:"),
@@ -2197,8 +2198,8 @@ check(activeKeep.disposition === "keep" && activeKeep.protocol?.version === 1 &&
                 "{pointer}: {command}"
             );
             assert!(
-                command.contains(" -InputFormat Text -OutputFormat Text "),
-                "{pointer}: nested PowerShell transport must stay textual: {command}"
+                command.contains(" -OutputFormat Text "),
+                "{pointer}: nested PowerShell output must stay textual: {command}"
             );
             assert!(
                 !command.contains("$env:")
