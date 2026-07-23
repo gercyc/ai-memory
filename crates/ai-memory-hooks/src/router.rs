@@ -409,6 +409,12 @@ pub struct HookState {
     /// session close stays cheap; the LLM checkpoint otherwise happens on
     /// PreCompact and via manual `memory_consolidate`.
     pub consolidate_on_session_end: bool,
+    /// Opt-in (`AI_MEMORY_CAPTURE_ASSISTANT`): when true, the server honors the
+    /// client's `_ai_memory_assistant` protocol on a `Stop` event and persists
+    /// the sanitized excerpt as the Stop body. Off by default; when off the
+    /// marker is stripped and the Stop stays empty. Double opt-in: the client
+    /// must also have been installed with `--capture-assistant` (#196).
+    pub capture_assistant_enabled: bool,
     /// Scoped session keys known to be subagents (seeded by `SubagentStart` / any
     /// marker-bearing event). For a project that opted into
     /// `drop_subagent_captures` (via its `.ai-memory.toml`, forwarded as the
@@ -443,7 +449,11 @@ async fn handle_hook(
     // `Value` before it becomes a `HookEnvelope`, so the field can never reach
     // `body_excerpt`, tracing, or the store — regardless of client version.
     crate::assistant_capture::strip_assistant_message_raw(&mut body);
-    let env = HookEnvelope::from_query_and_body(query, body);
+    let mut env = HookEnvelope::from_query_and_body(query, body);
+    // Consume the opt-in `_ai_memory_assistant` marker and, when both opt-ins are
+    // on for a supported Stop, populate the Stop body with the sanitized excerpt.
+    // Any gate failure leaves an empty Stop with the same 202 "queued" response.
+    crate::assistant_capture::apply_assistant_backstop(&mut env, state.capture_assistant_enabled);
     let Some(env) = inspect_capture_envelope(env) else {
         return (StatusCode::ACCEPTED, "capture policy dropped");
     };
@@ -605,7 +615,11 @@ async fn handle_hook_batch(
         // per item before the envelope is built (#196).
         crate::assistant_capture::strip_assistant_message_raw(&mut item.body);
         let query = parse_hook_query(&item.url);
-        let env = HookEnvelope::from_query_and_body(query, item.body);
+        let mut env = HookEnvelope::from_query_and_body(query, item.body);
+        crate::assistant_capture::apply_assistant_backstop(
+            &mut env,
+            state.capture_assistant_enabled,
+        );
         let Some(env) = inspect_capture_envelope(env) else {
             // A protocol-directed drop is committed from the spool's point of
             // view, but intentionally spends neither ingress capacity nor a
@@ -2247,7 +2261,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use ai_memory_consolidate::{AutoImproveReviewConfig, run_auto_improve_review};
-    use ai_memory_core::Sanitizer;
+    use ai_memory_core::{SanitizeConfig, Sanitizer};
     use ai_memory_llm::{ChatRequest, ChatResponse, LlmProvider, LlmResult};
     use ai_memory_store::Store;
     use ai_memory_wiki::Wiki;
@@ -2312,6 +2326,7 @@ mod tests {
             project_cache: Arc::new(tokio::sync::Mutex::new(ProjectCacheStore::default())),
             active_project: ActiveProject::new(),
             consolidate_on_session_end: false,
+            capture_assistant_enabled: false,
             subagent_sessions: Arc::new(tokio::sync::Mutex::new(SubagentSessionSet::default())),
             ingest_rate: Arc::new(tokio::sync::Mutex::new(IngestRateLimiter::disabled())),
             home_dir: None,
@@ -2968,6 +2983,98 @@ mod tests {
             !any_file_contains(tmp.path(), b"SENTINEL_ASSISTANT_MESSAGE"),
             "assistant message leaked into the on-disk store"
         );
+    }
+
+    /// Build a Stop batch item as an opted-in client would: raw field stripped,
+    /// sanitized `_ai_memory_assistant` marker spliced in, `capture_assistant=1`
+    /// on the URL.
+    fn opted_in_stop_item(session_id: &str, message: &str) -> HookBatchItem {
+        let mut body = serde_json::json!({
+            "session_id": session_id,
+            "last_assistant_message": message,
+        });
+        let out = crate::assistant_capture::transform_for_client(
+            &mut body,
+            ai_memory_core::AgentKind::ClaudeCode,
+            HookEvent::Stop,
+        );
+        assert!(out.captured, "test fixture must produce a protocol");
+        HookBatchItem {
+            url: "http://h/hook?event=stop&agent=claude-code&capture_assistant=1".into(),
+            body,
+        }
+    }
+
+    fn stop_session_id(session_id: &str) -> ai_memory_core::SessionId {
+        resolve_session_id(&HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "stop".into(),
+                agent: Some("claude-code".into()),
+                session_id: Some(session_id.into()),
+                ..Default::default()
+            },
+            serde_json::json!({ "session_id": session_id }),
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn assistant_capture_round_trips_when_both_opt_ins_on() {
+        let tmp = TempDir::new().unwrap();
+        let mut state = make_state(&tmp).await;
+        state.capture_assistant_enabled = true;
+        let state = Arc::new(state);
+
+        let items = vec![opted_in_stop_item("cap-on", "the fix is in config.rs")];
+        let response = handle_hook_batch(State(state.clone()), None, Json(items))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let observations = state
+            .reader
+            .observations_for_session(stop_session_id("cap-on"))
+            .await
+            .unwrap();
+        let stop = observations
+            .iter()
+            .find(|o| o.kind == ai_memory_core::ObservationKind::Stop)
+            .expect("Stop persisted");
+        assert_eq!(
+            stop.body, "the fix is in config.rs",
+            "excerpt must be persisted as the Stop body"
+        );
+        // The synthetic marker must not survive anywhere on disk.
+        assert!(!any_file_contains(tmp.path(), b"_ai_memory_assistant"));
+    }
+
+    #[tokio::test]
+    async fn assistant_capture_stays_empty_when_server_disabled() {
+        let tmp = TempDir::new().unwrap();
+        // make_state defaults capture_assistant_enabled = false.
+        let state = Arc::new(make_state(&tmp).await);
+
+        let items = vec![opted_in_stop_item("cap-off", "should not persist")];
+        let response = handle_hook_batch(State(state.clone()), None, Json(items))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let observations = state
+            .reader
+            .observations_for_session(stop_session_id("cap-off"))
+            .await
+            .unwrap();
+        let stop = observations
+            .iter()
+            .find(|o| o.kind == ai_memory_core::ObservationKind::Stop)
+            .expect("Stop still persisted, just empty");
+        assert!(
+            stop.body.is_empty(),
+            "server-off Stop must be empty, got: {:?}",
+            stop.body
+        );
+        assert!(!any_file_contains(tmp.path(), b"should not persist"));
     }
 
     /// `pre-tool-use` query+agent for building an env to recompute a SessionId.
@@ -6485,10 +6592,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn privacy_protocol_evidence_never_persists_protected_tool_sentinel() {
-        const SENTINEL: &str = "PHASE3_PROTECTED_PATH_AND_CONTENT_7f6c";
+    async fn privacy_protocol_and_assistant_capture_sentinels_never_reach_storage_or_reviewer() {
+        const TOOL_SENTINEL: &str = "PHASE3_PROTECTED_PATH_AND_CONTENT_7f6c";
+        const ASSISTANT_SENTINEL: &str = "ASSISTANT_PRIVATE_RESULT_9c2e";
         let tmp = TempDir::new().unwrap();
-        let state = make_state(&tmp).await;
+        let mut state = make_state(&tmp).await;
+        state.sanitizer = Sanitizer::new(&SanitizeConfig {
+            extra_patterns: vec![ASSISTANT_SENTINEL.into()],
+            allowlist: Vec::new(),
+        })
+        .unwrap();
+        state.capture_assistant_enabled = true;
         let session_id = "privacy-evidence";
 
         for (event, body) in [
@@ -6527,7 +6641,7 @@ mod tests {
             },
             serde_json::json!({
                 "session_id": session_id, "tool_name": "Write",
-                "tool_input": { "file_path": SENTINEL }, "tool_response": SENTINEL,
+                "tool_input": { "file_path": TOOL_SENTINEL }, "tool_response": TOOL_SENTINEL,
                 "_ai_memory_capture": capture_protocol("drop", "inactive", "unknown", 99, "extracted"),
             }),
         );
@@ -6550,6 +6664,33 @@ mod tests {
             "metadata-only protocol renders only its safe summary"
         );
         process(&state, metadata, None).await.unwrap();
+
+        let mut assistant_body = serde_json::json!({
+            "session_id": session_id,
+            "cwd": "/repo",
+            "last_assistant_message": format!("completed safely: {ASSISTANT_SENTINEL}"),
+        });
+        let transformed = crate::assistant_capture::transform_for_client(
+            &mut assistant_body,
+            AgentKind::ClaudeCode,
+            HookEvent::Stop,
+        );
+        assert!(transformed.captured);
+        assert!(assistant_body.get("last_assistant_message").is_none());
+        let mut assistant = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "stop".into(),
+                agent: Some("claude-code".into()),
+                capture_assistant: Some("true".into()),
+                ..Default::default()
+            },
+            assistant_body,
+        );
+        crate::assistant_capture::apply_assistant_backstop(
+            &mut assistant,
+            state.capture_assistant_enabled,
+        );
+        process(&state, assistant, None).await.unwrap();
 
         process(
             &state,
@@ -6581,41 +6722,54 @@ mod tests {
             .unwrap()
             .unwrap();
         let observations = state.reader.observations_for_session(sid).await.unwrap();
-        assert!(observations.iter().all(|observation| {
-            observation.body.is_empty() || !observation.body.contains(SENTINEL)
-        }));
+        for sentinel in [TOOL_SENTINEL, ASSISTANT_SENTINEL] {
+            assert!(observations.iter().all(|observation| {
+                observation.body.is_empty() || !observation.body.contains(sentinel)
+            }));
+        }
         assert!(observations.iter().any(|observation| {
             observation.title == "file" && observation.body == "tool_family: file\noutcome: unknown"
         }));
-        assert!(
-            state
-                .reader
-                .search_observations_for_project(workspace_id, project_id, SENTINEL.into(), 10)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert!(observations.iter().any(|observation| {
+            observation.kind == ObservationKind::Stop
+                && observation.body == "completed safely: [REDACTED]"
+        }));
+        for sentinel in [TOOL_SENTINEL, ASSISTANT_SENTINEL] {
+            assert!(
+                state
+                    .reader
+                    .search_observations_for_project(workspace_id, project_id, sentinel.into(), 10,)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
         let page = state
             .reader
             .page_body_by_ids(workspace_id, project_id, &format!("sessions/{sid}.md"))
             .await
             .unwrap()
             .unwrap();
-        assert!(!page.body.contains(SENTINEL));
+        assert!(!page.body.contains(TOOL_SENTINEL));
+        assert!(!page.body.contains(ASSISTANT_SENTINEL));
         let handoff = state
             .reader
             .latest_open_handoff(workspace_id, project_id, None)
             .await
             .unwrap()
             .unwrap();
-        assert!(!handoff.summary.contains(SENTINEL));
+        assert!(!handoff.summary.contains(TOOL_SENTINEL));
+        assert!(!handoff.summary.contains(ASSISTANT_SENTINEL));
         assert!(
             !state
                 .wiki
                 .recent_checkpoints(20)
                 .unwrap()
                 .iter()
-                .any(|entry| entry.summary.contains(SENTINEL))
+                .any(|entry| {
+                    entry.summary.contains(TOOL_SENTINEL)
+                        || entry.summary.contains(ASSISTANT_SENTINEL)
+                })
         );
 
         let llm: &'static RecordingLlm = Box::leak(Box::new(RecordingLlm(Mutex::new(None))));
@@ -6641,9 +6795,11 @@ mod tests {
             .take()
             .expect("review called recording LLM");
         let request_text = format!("{:?}{:?}", request.system, request.messages);
-        assert!(!request_text.contains(SENTINEL));
+        assert!(!request_text.contains(TOOL_SENTINEL));
+        assert!(!request_text.contains(ASSISTANT_SENTINEL));
         let report_text = serde_json::to_string(&report).unwrap();
-        assert!(!report_text.contains(SENTINEL));
+        assert!(!report_text.contains(TOOL_SENTINEL));
+        assert!(!report_text.contains(ASSISTANT_SENTINEL));
         // Review is read-only: no pending sidecar or approved page is created.
         assert!(
             state
