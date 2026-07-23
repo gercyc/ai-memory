@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `packages/agent-core/src/session/index.ts`), so the previous hook consumed
   pending handoffs — legacy and managed — without ever showing them to the
   model. `UserPromptSubmit` stdout is injected as a user message before the
-  turn. Re-run `ai-memory install-hooks --agent kimi-code --apply` after
+  turn. The native `ai-memory hook` path now also accepts the
+  `user-prompt-submit` event token alongside `user-prompt` for kimi handoff
+  delivery. Re-run `ai-memory install-hooks --agent kimi-code --apply` after
   upgrading.
 
 ## [1.17.3] - 2026-07-22

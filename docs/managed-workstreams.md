@@ -87,10 +87,13 @@ consume the later adoption opportunity.
    actual native session and injects only the portable events that session has
    not seen. Crush, which has no SessionStart hook, receives the same bounded
    packet through a temporary `options.global_context_paths` entry. Kimi Code
-   fires SessionStart but discards its stdout, so the kimi adapter links there
-   and delivers the packet through the UserPromptSubmit hook instead, whose
-   stdout Kimi Code injects as a user message before the turn. Direct
-   launches continue to use the existing single-use handoff path.
+   fires SessionStart but discards its stdout, so the kimi adapter's
+   SessionStart hook only captures the event — it neither fetches nor links.
+   The UserPromptSubmit hook issues the `/handoff` GET with the native
+   `session_id` in the query; the server links the session and renders the
+   packet atomically, and Kimi Code injects the hook's stdout as a user
+   message before the turn. Direct launches continue to use the existing
+   single-use handoff path.
 4. When the child exits, ai-memory reads the native transcript store without
    modifying it. Visible user/assistant messages, completed tool calls/results,
    compaction summaries, and a non-mutating Git checkpoint enter an append-only
@@ -181,7 +184,13 @@ Known Kimi Code adapter limitations: subagent transcripts
 (`agents/<id>/wire.jsonl` other than `main`) are not imported in v1 and are
 recorded as an extraction-loss annotation; the session bucket directory name
 is a one-way hash of the working directory, so discovery always reads
-`state.json`'s `workDir` and never parses the bucket name. The native
+`state.json`'s `workDir` and never parses the bucket name. Event ids derive
+from the SHA-256 of the raw wire.jsonl line, so two byte-identical lines —
+only possible with identical content in the same millisecond, because Kimi
+Code stamps each record with `time` — collapse into a single ledger event.
+Legacy sessions that keep `wire.jsonl` directly in the session directory
+(the pre-`agents/` layout the kimi session-store still reads through its
+stat fallback) are neither discovered nor imported in v1. The native
 contract was verified against Kimi Code v0.28.1.
 
 Crush needs no ai-memory hook installation for managed mode. The launcher reads
