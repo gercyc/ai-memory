@@ -2187,6 +2187,28 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
+    async fn wait_for_maintenance_success(
+        store: &Store,
+        job: ai_memory_store::MaintenanceJob,
+    ) -> i64 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(last_success) = store
+                .reader
+                .maintenance_job_last_success(job)
+                .await
+                .unwrap()
+            {
+                return last_success;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "maintenance writer did not persist successful completion"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[test]
     fn existing_users_require_nonempty_pepper_and_root_bearer() {
         for users_exist in [false, true] {
@@ -2305,20 +2327,7 @@ mod tests {
         tokio::time::advance(Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
         assert_eq!(received.try_recv(), Ok(2));
-        let mut persisted = false;
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-            persisted = store
-                .reader
-                .maintenance_job_last_success(ai_memory_store::MaintenanceJob::ForgetSweep)
-                .await
-                .unwrap()
-                .is_some();
-            if persisted {
-                break;
-            }
-        }
-        assert!(persisted, "successful ticks persist cadence");
+        wait_for_maintenance_success(&store, ai_memory_store::MaintenanceJob::ForgetSweep).await;
 
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(
@@ -2506,27 +2515,7 @@ mod tests {
         tokio::time::advance(Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
         assert_eq!(received.try_recv(), Ok("end"));
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
-            if store
-                .reader
-                .maintenance_job_last_success(ai_memory_store::MaintenanceJob::RuleLint)
-                .await
-                .unwrap()
-                .is_some()
-            {
-                break;
-            }
-        }
-        assert!(
-            store
-                .reader
-                .maintenance_job_last_success(ai_memory_store::MaintenanceJob::RuleLint)
-                .await
-                .unwrap()
-                .is_some(),
-            "successful completion must be persisted before measuring the next interval"
-        );
+        wait_for_maintenance_success(&store, ai_memory_store::MaintenanceJob::RuleLint).await;
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
@@ -2573,19 +2562,9 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(first_received.try_recv(), Ok(()));
 
-        let mut persisted = None;
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
-            persisted = store
-                .reader
-                .maintenance_job_last_success(ai_memory_store::MaintenanceJob::ForgetSweep)
-                .await
-                .unwrap();
-            if persisted.is_some() {
-                break;
-            }
-        }
-        let persisted = persisted.expect("first scheduler persisted successful completion");
+        let persisted =
+            wait_for_maintenance_success(&store, ai_memory_store::MaintenanceJob::ForgetSweep)
+                .await;
         first.abort();
 
         // Restart one second into the persisted cadence: exactly three seconds remain.
